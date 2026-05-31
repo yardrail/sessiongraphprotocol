@@ -99,6 +99,11 @@ Inside the console, use `:help`, `:session`, and `:quit` for basic control.
 When `ORCHESTRATOR_URL` is set, the binary runs in strict OAC stream mode and initiates an
 outbound Connect bidirectional stream to that endpoint.
 
+In this mode, the model lives inside the harness. The harness consumes each OAC event,
+routes it through the same liveagent session engine used by the local coding console,
+persists the resulting SGP graph under the orchestrator `session_id`, and then acknowledges
+ delivery back over the OAC stream.
+
 Optional auth input:
 
 - `ORCHESTRATOR_TOKEN`: bearer token used as `Authorization: Bearer ...`.
@@ -106,8 +111,13 @@ Optional auth input:
 - `ORCHESTRATOR_CLIENT_CERT`: client certificate path for optional mTLS.
 - `ORCHESTRATOR_CLIENT_KEY`: client private key path for optional mTLS.
 
-In stream mode, incoming orchestrator events are appended to SGP as tool-role nodes keyed by
-the provided `session_id`.
+Model selection in OAC stream mode follows the same rules as local console mode:
+
+- `GOOGLE_API_KEY` switches the harness to the hosted Gemini path.
+- otherwise the harness uses local Ollama via `OLLAMA_HOST` and `OLLAMA_MODEL` or `OLLAMA_MODEL_FILE`.
+- for non-interactive harness startup, missing Ollama models are not downloaded unless `OLLAMA_AUTO_PULL=1` is set.
+
+By default, OAC stream sessions are stored under `oac-harness/` inside `SGP_SESSION_DIR`.
 
 ## OAC packaging
 

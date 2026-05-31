@@ -14,8 +14,8 @@ type Agent struct {
 }
 
 // New creates a root coding-agent session graph.
-func New(systemPrompt string) (*Agent, sgp.Node, error) {
-	graph := sgp.NewGraph()
+func New(systemPrompt string, options ...sgp.Option) (*Agent, sgp.Node, error) {
+	graph := sgp.NewGraph(options...)
 
 	root, _, err := graph.Append(sgp.Message{
 		Role:    sgp.MessageRoleSystem,

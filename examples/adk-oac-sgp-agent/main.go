@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -35,7 +37,9 @@ const (
 	ollamaBaseURLKey      = "OLLAMA_HOST"
 	ollamaModelKey        = "OLLAMA_MODEL"
 	ollamaModelFileKey    = "OLLAMA_MODEL_FILE"
+	ollamaAutoPullKey     = "OLLAMA_AUTO_PULL"
 	codingSessionSubdir   = "coding-console"
+	oacSessionSubdir      = "oac-harness"
 	codingWorkspaceKey    = "CODING_WORKSPACE_ROOT"
 	orchestratorURLKey    = "ORCHESTRATOR_URL"
 	orchestratorTokenKey  = "ORCHESTRATOR_TOKEN"
@@ -115,31 +119,24 @@ func runADKLauncher(ctx context.Context) {
 }
 
 func runOACStream(ctx context.Context, orchestratorURL string) {
-	apiKey := strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
-	model, err := gemini.NewModel(ctx, "gemini-3.1-flash-lite", &genai.ClientConfig{
-		APIKey: apiKey,
-	})
+	runtime, err := newModelRuntime(ctx, nil, nil, false)
 	if err != nil {
-		log.Fatalf("failed to create model: %v", err)
+		log.Fatalf("failed to create harness model runtime: %v", err)
 	}
 
-	sessionDir := os.Getenv("SGP_SESSION_DIR")
-	if sessionDir == "" {
-		sessionDir = ".sgp-sessions"
-	}
-	sessionService, err := sgpsession.NewService(sessionDir)
+	store, err := newHarnessStore(oacSessionSubdir)
 	if err != nil {
-		log.Fatalf("failed to create SGP session service: %v", err)
+		log.Fatalf("failed to create OAC harness store: %v", err)
 	}
 
-	_, err = llmagent.New(llmagent.Config{
-		Name:        "oac_sgp_agent",
-		Model:       model,
-		Description: "ADK agent with SGP-backed durable session graph storage.",
-		Instruction: "You are a helpful execution agent. Keep responses precise and include assumptions when uncertain.",
-	})
+	workspaceRoot := strings.TrimSpace(os.Getenv(codingWorkspaceKey))
+	if workspaceRoot == "" {
+		workspaceRoot = defaultCodingWorkspaceRoot()
+	}
+
+	harness, err := liveagent.NewHarness(workspaceRoot, store, runtime.generator, runtime.modelName, "")
 	if err != nil {
-		log.Fatalf("failed to create agent: %v", err)
+		log.Fatalf("failed to create OAC harness: %v", err)
 	}
 
 	tlsCfg := oacstream.TLSConfig{
@@ -155,6 +152,15 @@ func runOACStream(ctx context.Context, orchestratorURL string) {
 	log.Printf("running in OAC stream mode against %s", orchestratorURL)
 	err = client.Run(ctx, func(callCtx context.Context, incoming oacstream.OrchestratorEnvelope) (oacstream.HarnessEnvelope, error) {
 		if incoming.SessionEnd {
+			if endErr := harness.EndSession(callCtx, incoming.SessionID); endErr != nil {
+				return oacstream.HarnessEnvelope{
+					SessionID: incoming.SessionID,
+					Result: &oacstream.EventResult{
+						Success:      false,
+						ErrorMessage: endErr.Error(),
+					},
+				}, nil
+			}
 			return oacstream.HarnessEnvelope{
 				SessionID: incoming.SessionID,
 				Result:    &oacstream.EventResult{Success: true},
@@ -172,10 +178,8 @@ func runOACStream(ctx context.Context, orchestratorURL string) {
 			}, nil
 		}
 
-		err = sessionService.IngestOrchestratorEvent(
+		response, err := harness.HandleEvent(
 			callCtx,
-			defaultAppName,
-			defaultUserID,
 			incoming.SessionID,
 			event.Channel,
 			event.ContentType,
@@ -191,6 +195,8 @@ func runOACStream(ctx context.Context, orchestratorURL string) {
 			}, nil
 		}
 
+		log.Printf("processed OAC event session=%s channel=%s response=%q", incoming.SessionID, event.Channel, truncateForLog(response, 200))
+
 		return oacstream.HarnessEnvelope{
 			SessionID: incoming.SessionID,
 			Result:    &oacstream.EventResult{Success: true},
@@ -203,44 +209,12 @@ func runOACStream(ctx context.Context, orchestratorURL string) {
 
 func runCodingConsole(ctx context.Context) {
 	input := bufio.NewReader(os.Stdin)
-	apiKey := strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
-	modelName := ""
-
-	var generator liveagent.ModelGenerator
-	if apiKey != "" {
-		modelName = strings.TrimSpace(os.Getenv(codingModelKey))
-		if modelName == "" {
-			modelName = defaultCodingModel
-		}
-
-		client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: apiKey})
-		if err != nil {
-			log.Fatalf("failed to create genai client: %v", err)
-		}
-		generator = client.Models
-	} else {
-		ollamaBaseURL := strings.TrimSpace(os.Getenv(ollamaBaseURLKey))
-		if ollamaBaseURL == "" {
-			ollamaBaseURL = defaultOllamaBaseURL
-		}
-
-		modelName = resolveOllamaModel()
-
-		ollamaClient := liveagent.NewOllamaClient(ollamaBaseURL)
-		if err := liveagent.PromptBeforePull(ctx, input, os.Stdout, ollamaClient, modelName); err != nil {
-			log.Fatalf("ollama setup failed: %v", err)
-		}
-
-		generator = liveagent.NewOllamaGenerator(ollamaBaseURL, modelName)
-		log.Printf("running coding-console mode with local Ollama model %s at %s", modelName, ollamaBaseURL)
+	runtime, err := newModelRuntime(ctx, input, os.Stdout, true)
+	if err != nil {
+		log.Fatalf("failed to create coding-console model runtime: %v", err)
 	}
 
-	sessionDir := os.Getenv("SGP_SESSION_DIR")
-	if sessionDir == "" {
-		sessionDir = ".sgp-sessions"
-	}
-
-	store, err := sgp.NewJSONFileStore(filepath.Join(sessionDir, codingSessionSubdir))
+	store, err := newHarnessStore(codingSessionSubdir)
 	if err != nil {
 		log.Fatalf("failed to create coding-console store: %v", err)
 	}
@@ -260,12 +234,96 @@ func runCodingConsole(ctx context.Context) {
 		}
 	}()
 
-	if apiKey != "" {
+	if runtime.hosted {
 		log.Printf("running coding-console mode against %s with session %s", console.WorkspaceRoot(), console.SessionID())
+	} else {
+		log.Printf("running coding-console mode with local Ollama model %s at %s", runtime.modelName, runtime.ollamaBaseURL)
 	}
-	if err := console.Run(ctx, input, os.Stdout, generator, modelName); err != nil {
+	if err := console.Run(ctx, input, os.Stdout, runtime.generator, runtime.modelName); err != nil {
 		log.Fatalf("coding-console failed: %v", err)
 	}
+}
+
+type modelRuntime struct {
+	generator     liveagent.ModelGenerator
+	modelName     string
+	hosted        bool
+	ollamaBaseURL string
+}
+
+func newModelRuntime(ctx context.Context, input *bufio.Reader, output *os.File, allowPrompt bool) (modelRuntime, error) {
+	apiKey := strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
+	if apiKey != "" {
+		modelName := strings.TrimSpace(os.Getenv(codingModelKey))
+		if modelName == "" {
+			modelName = defaultCodingModel
+		}
+
+		client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: apiKey})
+		if err != nil {
+			return modelRuntime{}, fmt.Errorf("create genai client: %w", err)
+		}
+
+		return modelRuntime{generator: client.Models, modelName: modelName, hosted: true}, nil
+	}
+
+	ollamaBaseURL := strings.TrimSpace(os.Getenv(ollamaBaseURLKey))
+	if ollamaBaseURL == "" {
+		ollamaBaseURL = defaultOllamaBaseURL
+	}
+
+	modelName := resolveOllamaModel()
+	ollamaClient := liveagent.NewOllamaClient(ollamaBaseURL)
+	if allowPrompt {
+		if input == nil || output == nil {
+			return modelRuntime{}, errors.New("interactive ollama setup requires stdin and stdout")
+		}
+		if err := liveagent.PromptBeforePull(ctx, input, output, ollamaClient, modelName); err != nil {
+			return modelRuntime{}, err
+		}
+	} else {
+		exists, err := ollamaClient.HasModel(ctx, modelName)
+		if err != nil {
+			return modelRuntime{}, err
+		}
+		if !exists {
+			if strings.TrimSpace(os.Getenv(ollamaAutoPullKey)) == "1" {
+				if err = ollamaClient.PullModel(ctx, modelName, os.Stdout); err != nil {
+					return modelRuntime{}, err
+				}
+			} else {
+				return modelRuntime{}, fmt.Errorf("ollama model %s is not installed; preinstall it in the harness or set %s=1", modelName, ollamaAutoPullKey)
+			}
+		}
+	}
+
+	return modelRuntime{
+		generator:     liveagent.NewOllamaGenerator(ollamaBaseURL, modelName),
+		modelName:     modelName,
+		ollamaBaseURL: ollamaBaseURL,
+	}, nil
+}
+
+func newHarnessStore(subdir string) (*sgp.JSONFileStore, error) {
+	sessionDir := os.Getenv("SGP_SESSION_DIR")
+	if sessionDir == "" {
+		sessionDir = ".sgp-sessions"
+	}
+
+	return sgp.NewJSONFileStore(filepath.Join(sessionDir, subdir))
+}
+
+func truncateForLog(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
+	}
+
+	if limit <= 3 {
+		return value[:limit]
+	}
+
+	return value[:limit-3] + "..."
 }
 
 func defaultCodingWorkspaceRoot() string {

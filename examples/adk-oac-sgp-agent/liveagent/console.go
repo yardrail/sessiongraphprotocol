@@ -51,6 +51,18 @@ type toolOutcome struct {
 }
 
 func NewConsole(workspaceRoot string, store sgp.Store, systemPrompt string) (*Console, error) {
+	return newConsole(workspaceRoot, store, systemPrompt, nil)
+}
+
+func NewConsoleForSession(workspaceRoot string, store sgp.Store, systemPrompt string, sessionID sgp.ID) (*Console, error) {
+	if strings.TrimSpace(string(sessionID)) == "" {
+		return nil, errors.New("session id is required")
+	}
+
+	return newConsole(workspaceRoot, store, systemPrompt, &sessionID)
+}
+
+func newConsole(workspaceRoot string, store sgp.Store, systemPrompt string, sessionID *sgp.ID) (*Console, error) {
 	workspaceRoot = strings.TrimSpace(workspaceRoot)
 	if workspaceRoot == "" {
 		return nil, errors.New("workspace root is required")
@@ -65,7 +77,12 @@ func NewConsole(workspaceRoot string, store sgp.Store, systemPrompt string) (*Co
 		systemPrompt = defaultSystemPrompt
 	}
 
-	agent, root, err := codingagent.New(systemPrompt)
+	graphOptions := []sgp.Option{}
+	if sessionID != nil {
+		graphOptions = append(graphOptions, sgp.WithSessionID(*sessionID))
+	}
+
+	agent, root, err := codingagent.New(systemPrompt, graphOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("create coding agent: %w", err)
 	}
