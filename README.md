@@ -431,3 +431,15 @@ span (`D..H`) and branch tips (`P2`, `Q2`) remain queryable as audit provenance.
 The package currently focuses on the protocol model, in-memory graph operations, persistence abstractions, and a local JSON backend. It does not prescribe a network protocol, database schema, or orchestrator runtime.
 
 See [SGP.md](./SGP.md) for the protocol document.
+
+## ADK + OAC Example
+
+An end-to-end example integrating ADK runtime sessions with SGP JSON persistence lives at [examples/adk-oac-sgp-agent](./examples/adk-oac-sgp-agent).
+
+It includes:
+
+- a custom ADK `session.Service` backed by SGP,
+- an in-process OAC v1alpha2 Connect stream client (no sidecar),
+- a `codingagent` proof of concept for subagents and rewrite-driven history cleanup,
+- unit tests for session lifecycle and persistence behavior,
+- and an OAC-labeled Dockerfile plus example event schema.

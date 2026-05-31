@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://restrukt.ai/schemas/oac/task-event.schema.json",
+  "title": "Task Event",
+  "type": "object",
+  "required": [
+    "event",
+    "session_id",
+    "timestamp"
+  ],
+  "properties": {
+    "event": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
