@@ -15,7 +15,7 @@ import (
 
 type stringSlice []string
 
-func (s *stringSlice) String() string  { return strings.Join(*s, ", ") }
+func (s *stringSlice) String() string     { return strings.Join(*s, ", ") }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 
 func buildPeersDesc(peers []string) string {
@@ -55,7 +55,15 @@ func main() {
 	if peersDesc != "" {
 		systemPrompt += "\n\n" + peersDesc
 	}
-	h, sid, err := newHarness(*sessionDir, *sessionID, *ollamaURL, *model, systemPrompt, "Tools: read_file (read file contents), teleport (switch harness).", peersDesc)
+	h, sid, err := newHarness(
+		*sessionDir,
+		*sessionID,
+		*ollamaURL,
+		*model,
+		systemPrompt,
+		"Tools: read_file (read file contents), teleport (switch harness).",
+		peersDesc,
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

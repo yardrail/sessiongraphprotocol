@@ -164,7 +164,10 @@ func TestServiceDelete(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	created, err := svc.Create(ctx, &session.CreateRequest{AppName: "app", UserID: "u1", SessionID: "s1"})
+	created, err := svc.Create(
+		ctx,
+		&session.CreateRequest{AppName: "app", UserID: "u1", SessionID: "s1"},
+	)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}

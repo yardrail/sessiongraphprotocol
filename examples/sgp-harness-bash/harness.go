@@ -28,7 +28,9 @@ type harness struct {
 	callSeq    int
 }
 
-func newHarness(sessionDir, sessionID, ollamaURL, model, systemPrompt, toolsDesc, peersDesc string) (*harness, sgp.ID, error) {
+func newHarness(
+	sessionDir, sessionID, ollamaURL, model, systemPrompt, toolsDesc, peersDesc string,
+) (*harness, sgp.ID, error) {
 	store, err := jsonstore.NewJSONFileStore(sessionDir)
 	if err != nil {
 		return nil, "", fmt.Errorf("create store: %w", err)
@@ -71,7 +73,11 @@ func newHarness(sessionDir, sessionID, ollamaURL, model, systemPrompt, toolsDesc
 
 func (h *harness) handleTurn(ctx context.Context, userInput string) (string, error) {
 	userNode, _, err := h.graph.Append(
-		sgp.Message{User: &sgp.UserMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: userInput}}}}},
+		sgp.Message{
+			User: &sgp.UserMessage{
+				Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: userInput}}},
+			},
+		},
 		h.headID,
 	)
 	if err != nil {
@@ -92,7 +98,13 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("resume nodes: %w", err)
 		}
 
-		resp, err := ollamaChat(ctx, h.ollamaURL, h.model, toOllamaMessages(nodes), toolDefinitions())
+		resp, err := ollamaChat(
+			ctx,
+			h.ollamaURL,
+			h.model,
+			toOllamaMessages(nodes),
+			toolDefinitions(),
+		)
 		if err != nil {
 			return "", fmt.Errorf("ollama chat: %w", err)
 		}
@@ -158,8 +170,10 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 					sgp.Message{Tool: &sgp.ToolMessage{
 						ToolCallID: fmt.Sprintf("tc-%d-%d", h.callSeq, teleportIdx),
 						Name:       "teleport",
-						Parts:      []sgp.ContentPart{{Text: &sgp.TextPart{Text: spawnErr.Error()}}},
-						IsError:    true,
+						Parts: []sgp.ContentPart{
+							{Text: &sgp.TextPart{Text: spawnErr.Error()}},
+						},
+						IsError: true,
 					}},
 					h.headID,
 				)

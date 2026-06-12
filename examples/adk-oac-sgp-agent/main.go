@@ -18,10 +18,10 @@ import (
 	"google.golang.org/adk/cmd/launcher/full"
 	"google.golang.org/adk/model/gemini"
 
-	jsonstore "github.com/restrukt-ai/sessiongraphprotocol/pkg/store/json"
 	"github.com/restrukt-ai/sessiongraphprotocol/examples/adk-oac-sgp-agent/liveagent"
 	"github.com/restrukt-ai/sessiongraphprotocol/examples/adk-oac-sgp-agent/oacstream"
 	"github.com/restrukt-ai/sessiongraphprotocol/examples/adk-oac-sgp-agent/sgpsession"
+	jsonstore "github.com/restrukt-ai/sessiongraphprotocol/pkg/store/json"
 )
 
 const (
@@ -134,7 +134,13 @@ func runOACStream(ctx context.Context, orchestratorURL string) {
 		workspaceRoot = defaultCodingWorkspaceRoot()
 	}
 
-	harness, err := liveagent.NewHarness(workspaceRoot, store, runtime.generator, runtime.modelName, "")
+	harness, err := liveagent.NewHarness(
+		workspaceRoot,
+		store,
+		runtime.generator,
+		runtime.modelName,
+		"",
+	)
 	if err != nil {
 		log.Fatalf("failed to create OAC harness: %v", err)
 	}
@@ -144,64 +150,76 @@ func runOACStream(ctx context.Context, orchestratorURL string) {
 		ClientCertPath: strings.TrimSpace(os.Getenv(orchestratorCertKey)),
 		ClientKeyPath:  strings.TrimSpace(os.Getenv(orchestratorPrivKey)),
 	}
-	client, err := oacstream.NewConnectClientWithTLS(orchestratorURL, os.Getenv(orchestratorTokenKey), tlsCfg)
+	client, err := oacstream.NewConnectClientWithTLS(
+		orchestratorURL,
+		os.Getenv(orchestratorTokenKey),
+		tlsCfg,
+	)
 	if err != nil {
 		log.Fatalf("failed to create OAC stream client: %v", err)
 	}
 
 	log.Printf("running in OAC stream mode against %s", orchestratorURL)
-	err = client.Run(ctx, func(callCtx context.Context, incoming oacstream.OrchestratorEnvelope) (oacstream.HarnessEnvelope, error) {
-		if incoming.SessionEnd {
-			if endErr := harness.EndSession(callCtx, incoming.SessionID); endErr != nil {
+	err = client.Run(
+		ctx,
+		func(callCtx context.Context, incoming oacstream.OrchestratorEnvelope) (oacstream.HarnessEnvelope, error) {
+			if incoming.SessionEnd {
+				if endErr := harness.EndSession(callCtx, incoming.SessionID); endErr != nil {
+					return oacstream.HarnessEnvelope{
+						SessionID: incoming.SessionID,
+						Result: &oacstream.EventResult{
+							Success:      false,
+							ErrorMessage: endErr.Error(),
+						},
+					}, nil
+				}
+				return oacstream.HarnessEnvelope{
+					SessionID: incoming.SessionID,
+					Result:    &oacstream.EventResult{Success: true},
+				}, nil
+			}
+
+			event := incoming.Event
+			if event == nil {
 				return oacstream.HarnessEnvelope{
 					SessionID: incoming.SessionID,
 					Result: &oacstream.EventResult{
 						Success:      false,
-						ErrorMessage: endErr.Error(),
+						ErrorMessage: "missing event body",
 					},
 				}, nil
 			}
+
+			response, err := harness.HandleEvent(
+				callCtx,
+				incoming.SessionID,
+				event.Channel,
+				event.ContentType,
+				event.Payload,
+			)
+			if err != nil {
+				return oacstream.HarnessEnvelope{
+					SessionID: incoming.SessionID,
+					Result: &oacstream.EventResult{
+						Success:      false,
+						ErrorMessage: err.Error(),
+					},
+				}, nil
+			}
+
+			log.Printf(
+				"processed OAC event session=%s channel=%s response=%q",
+				incoming.SessionID,
+				event.Channel,
+				truncateForLog(response, 200),
+			)
+
 			return oacstream.HarnessEnvelope{
 				SessionID: incoming.SessionID,
 				Result:    &oacstream.EventResult{Success: true},
 			}, nil
-		}
-
-		event := incoming.Event
-		if event == nil {
-			return oacstream.HarnessEnvelope{
-				SessionID: incoming.SessionID,
-				Result: &oacstream.EventResult{
-					Success:      false,
-					ErrorMessage: "missing event body",
-				},
-			}, nil
-		}
-
-		response, err := harness.HandleEvent(
-			callCtx,
-			incoming.SessionID,
-			event.Channel,
-			event.ContentType,
-			event.Payload,
-		)
-		if err != nil {
-			return oacstream.HarnessEnvelope{
-				SessionID: incoming.SessionID,
-				Result: &oacstream.EventResult{
-					Success:      false,
-					ErrorMessage: err.Error(),
-				},
-			}, nil
-		}
-
-		log.Printf("processed OAC event session=%s channel=%s response=%q", incoming.SessionID, event.Channel, truncateForLog(response, 200))
-
-		return oacstream.HarnessEnvelope{
-			SessionID: incoming.SessionID,
-			Result:    &oacstream.EventResult{Success: true},
-		}, nil
-	})
+		},
+	)
 	if err != nil {
 		log.Fatalf("oac stream mode failed: %v", err)
 	}
@@ -235,7 +253,11 @@ func runCodingConsole(ctx context.Context) {
 	}()
 
 	if runtime.hosted {
-		log.Printf("running coding-console mode against %s with session %s", console.WorkspaceRoot(), console.SessionID())
+		log.Printf(
+			"running coding-console mode against %s with session %s",
+			console.WorkspaceRoot(),
+			console.SessionID(),
+		)
 	} else {
 		log.Printf("running coding-console mode with local Ollama model %s at %s", runtime.modelName, runtime.ollamaBaseURL)
 	}
@@ -251,7 +273,12 @@ type modelRuntime struct {
 	ollamaBaseURL string
 }
 
-func newModelRuntime(ctx context.Context, input *bufio.Reader, output *os.File, allowPrompt bool) (modelRuntime, error) {
+func newModelRuntime(
+	ctx context.Context,
+	input *bufio.Reader,
+	output *os.File,
+	allowPrompt bool,
+) (modelRuntime, error) {
 	apiKey := strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
 	if apiKey != "" {
 		modelName := strings.TrimSpace(os.Getenv(codingModelKey))

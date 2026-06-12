@@ -22,6 +22,11 @@ linters:
       check-type-assertions: true
       check-blank: true
       disable-default-exclusions: true
+      exclude-functions:
+        - "(*strings.Builder).WriteString"
+        - "(*strings.Builder).Write"
+    exhaustive:
+      default-signifies-exhaustive: true
     tagalign:
       align: true
       sort: true

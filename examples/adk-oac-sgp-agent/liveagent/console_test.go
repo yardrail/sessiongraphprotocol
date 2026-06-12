@@ -39,7 +39,11 @@ func TestExecuteFunctionCallsPrunesSingleFailedTool(t *testing.T) {
 
 	outcomes, _, err := console.executeFunctionCalls(ctx, planNode.ID, []*genai.FunctionCall{{
 		Name: "read_file",
-		Args: map[string]any{"path": "missing.txt", "start_line": float64(1), "end_line": float64(5)},
+		Args: map[string]any{
+			"path":       "missing.txt",
+			"start_line": float64(1),
+			"end_line":   float64(5),
+		},
 	}})
 	if err != nil {
 		t.Fatalf("executeFunctionCalls() error = %v", err)
@@ -131,7 +135,11 @@ func TestSpawnSubagentSearchCarriesProvenance(t *testing.T) {
 
 	outcome := console.executeFunctionCall(ctx, parentNode.ID, &genai.FunctionCall{
 		Name: "spawn_subagent_search",
-		Args: map[string]any{"question": "where is needle mentioned?", "query": "needle", "limit": float64(5)},
+		Args: map[string]any{
+			"question": "where is needle mentioned?",
+			"query":    "needle",
+			"limit":    float64(5),
+		},
 	})
 	if !outcome.success {
 		t.Fatalf("executeFunctionCall() success = false, output = %s", outcome.output)
@@ -148,7 +156,11 @@ func TestSpawnSubagentSearchCarriesProvenance(t *testing.T) {
 		t.Fatalf("SpawnedFrom.NodeID = %s, want %s", spawnedFrom.NodeID, parentNode.ID)
 	}
 	if spawnedFrom.SessionID != console.agent.Graph().Session().ID {
-		t.Fatalf("SpawnedFrom.SessionID = %s, want %s", spawnedFrom.SessionID, console.agent.Graph().Session().ID)
+		t.Fatalf(
+			"SpawnedFrom.SessionID = %s, want %s",
+			spawnedFrom.SessionID,
+			console.agent.Graph().Session().ID,
+		)
 	}
 	if outcome.payload == nil {
 		t.Fatal("outcome.payload = nil, want search payload")

@@ -1,4 +1,4 @@
-package jsonstore
+package jsonstore //nolint:revive // package name differs from directory intentionally
 
 import (
 	"context"
@@ -60,17 +60,33 @@ func TestJSONFileStoreHonorsCanceledContext(t *testing.T) {
 	cancel()
 
 	graph := sgp.NewGraph(sgp.WithIDGenerator(sequenceIDs("s1", "n1")))
+
 	startEvent, err := graph.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
-	if err = store.AppendEvent(ctx, graph.Session().ID, startEvent); !errors.Is(err, context.Canceled) {
+	err = store.AppendEvent(ctx, graph.Session().ID, startEvent)
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled from AppendEvent, got %v", err)
 	}
 
-	if _, err = store.LoadEvents(ctx, graph.Session().ID); !errors.Is(err, context.Canceled) {
+	_, err = store.LoadEvents(ctx, graph.Session().ID)
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled from LoadEvents, got %v", err)
+	}
+}
+
+func mustAppendEvents(t *testing.T, store *JSONFileStore, sessionID sgp.ID, events []sgp.Event) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	for _, event := range events {
+		err := store.AppendEvent(ctx, sessionID, event)
+		if err != nil {
+			t.Fatalf("append event: %v", err)
+		}
 	}
 }
 
@@ -83,6 +99,7 @@ func TestJSONFileStoreRoundTrip(t *testing.T) {
 	}
 
 	graph := sgp.NewGraph(sgp.WithIDGenerator(sequenceIDs("s1", "n-sys", "n-user")))
+
 	startEvent, err := graph.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -94,23 +111,19 @@ func TestJSONFileStoreRoundTrip(t *testing.T) {
 	}
 
 	userNode, appendUser, err := graph.Append(
-		sgp.Message{User: &sgp.UserMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: "hello"}}}}},
+		sgp.Message{
+			User: &sgp.UserMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: "hello"}}}},
+		},
 		root.ID,
 	)
 	if err != nil {
 		t.Fatalf("append user: %v", err)
 	}
 
-	ctx := context.Background()
 	sessionID := graph.Session().ID
+	mustAppendEvents(t, store, sessionID, []sgp.Event{startEvent, appendSys, appendUser})
 
-	for _, event := range []sgp.Event{startEvent, appendSys, appendUser} {
-		if err = store.AppendEvent(ctx, sessionID, event); err != nil {
-			t.Fatalf("append event: %v", err)
-		}
-	}
-
-	events, err := store.LoadEvents(ctx, sessionID)
+	events, err := store.LoadEvents(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -120,7 +133,13 @@ func TestJSONFileStoreRoundTrip(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	needsResponse, err := restored.NeedsResponse(userNode.ID)
+	assertRestoredRoundTrip(t, restored, userNode.ID)
+}
+
+func assertRestoredRoundTrip(t *testing.T, g *sgp.Graph, userNodeID sgp.ID) {
+	t.Helper()
+
+	needsResponse, err := g.NeedsResponse(userNodeID)
 	if err != nil {
 		t.Fatalf("needs response: %v", err)
 	}
@@ -129,7 +148,7 @@ func TestJSONFileStoreRoundTrip(t *testing.T) {
 		t.Fatal("expected dangling user node to require a response after restore")
 	}
 
-	messages, err := restored.ResumeMessages(userNode.ID)
+	messages, err := g.ResumeMessages(userNodeID)
 	if err != nil {
 		t.Fatalf("resume messages: %v", err)
 	}
@@ -148,6 +167,7 @@ func TestJSONFileStoreEventsLoadedInAppendOrder(t *testing.T) {
 	}
 
 	graph := sgp.NewGraph(sgp.WithIDGenerator(sequenceIDs("s1", "n1", "n2", "n3")))
+
 	startEvent, err := graph.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -157,25 +177,33 @@ func TestJSONFileStoreEventsLoadedInAppendOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append root: %v", err)
 	}
-	_, e2, err := graph.Append(sgp.Message{User: &sgp.UserMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: "q"}}}}}, root.ID)
+
+	_, e2, err := graph.Append(
+		sgp.Message{
+			User: &sgp.UserMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: "q"}}}},
+		},
+		root.ID,
+	)
 	if err != nil {
 		t.Fatalf("append user: %v", err)
 	}
-	_, e3, err := graph.Append(sgp.Message{Assistant: &sgp.AssistantMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: "a"}}}}}, root.ID)
+
+	_, e3, err := graph.Append(
+		sgp.Message{
+			Assistant: &sgp.AssistantMessage{
+				Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: "a"}}},
+			},
+		},
+		root.ID,
+	)
 	if err != nil {
 		t.Fatalf("append asst: %v", err)
 	}
 
-	ctx := context.Background()
 	sessionID := graph.Session().ID
+	mustAppendEvents(t, store, sessionID, []sgp.Event{startEvent, e1, e2, e3})
 
-	for _, event := range []sgp.Event{startEvent, e1, e2, e3} {
-		if err = store.AppendEvent(ctx, sessionID, event); err != nil {
-			t.Fatalf("append event: %v", err)
-		}
-	}
-
-	events, err := store.LoadEvents(ctx, sessionID)
+	events, err := store.LoadEvents(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -202,6 +230,7 @@ func TestJSONFileStoreKindRestoredOnLoad(t *testing.T) {
 	}
 
 	graph := sgp.NewGraph(sgp.WithIDGenerator(sequenceIDs("s1", "n1")))
+
 	startEvent, err := graph.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -219,16 +248,10 @@ func TestJSONFileStoreKindRestoredOnLoad(t *testing.T) {
 
 	_ = root
 
-	ctx := context.Background()
 	sessionID := graph.Session().ID
+	mustAppendEvents(t, store, sessionID, []sgp.Event{startEvent, nodeEvent, endEvent})
 
-	for _, event := range []sgp.Event{startEvent, nodeEvent, endEvent} {
-		if err = store.AppendEvent(ctx, sessionID, event); err != nil {
-			t.Fatalf("append event: %v", err)
-		}
-	}
-
-	events, err := store.LoadEvents(ctx, sessionID)
+	events, err := store.LoadEvents(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -260,12 +283,14 @@ func TestJSONFileStoreEndReasonPreservedOnLoad(t *testing.T) {
 	}
 
 	graph := sgp.NewGraph(sgp.WithIDGenerator(sequenceIDs("s1", "n1")))
+
 	startEvent, err := graph.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
-	if _, _, err = graph.Append(sgp.Message{System: &sgp.SystemMessage{Text: "sys"}}); err != nil {
+	_, _, err = graph.Append(sgp.Message{System: &sgp.SystemMessage{Text: "sys"}})
+	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
@@ -274,21 +299,16 @@ func TestJSONFileStoreEndReasonPreservedOnLoad(t *testing.T) {
 		t.Fatalf("end: %v", err)
 	}
 
-	ctx := context.Background()
 	sessionID := graph.Session().ID
+	mustAppendEvents(t, store, sessionID, []sgp.Event{startEvent, endEvent})
 
-	for _, event := range []sgp.Event{startEvent, endEvent} {
-		if err = store.AppendEvent(ctx, sessionID, event); err != nil {
-			t.Fatalf("append event: %v", err)
-		}
-	}
-
-	events, err := store.LoadEvents(ctx, sessionID)
+	events, err := store.LoadEvents(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
 
 	var foundReason sgp.EndReason
+
 	for _, e := range events {
 		if e.Kind == sgp.EventKindSessionEnded {
 			foundReason = e.Reason
@@ -304,6 +324,7 @@ func TestJSONFileStoreInvalidJSONLineReturnsError(t *testing.T) {
 	t.Parallel()
 
 	baseDir := t.TempDir()
+
 	store, err := NewJSONFileStore(baseDir)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -314,7 +335,12 @@ func TestJSONFileStoreInvalidJSONLineReturnsError(t *testing.T) {
 	validLine := `{"event":"session.start","session_id":"broken-session","timestamp":"2025-01-01T00:00:00Z"}`
 	content := validLine + "\n{not-json}\n"
 
-	if err = os.WriteFile(filepath.Join(baseDir, "broken-session.jsonl"), []byte(content), 0o644); err != nil {
+	err = os.WriteFile(
+		filepath.Join(baseDir, "broken-session.jsonl"),
+		[]byte(content),
+		0o600,
+	)
+	if err != nil {
 		t.Fatalf("write test file: %v", err)
 	}
 
@@ -328,22 +354,26 @@ func TestJSONFileStoreCreatesBaseDirOnFirstAppend(t *testing.T) {
 	t.Parallel()
 
 	baseDir := filepath.Join(t.TempDir(), "nested", "graphs")
+
 	store, err := NewJSONFileStore(baseDir)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
 
 	graph := sgp.NewGraph(sgp.WithIDGenerator(sequenceIDs("s1")))
+
 	startEvent, err := graph.Start()
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
-	if err = store.AppendEvent(context.Background(), graph.Session().ID, startEvent); err != nil {
+	err = store.AppendEvent(context.Background(), graph.Session().ID, startEvent)
+	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
-	if _, err = os.Stat(baseDir); err != nil {
+	_, err = os.Stat(baseDir)
+	if err != nil {
 		t.Fatalf("expected base dir to be created, got %v", err)
 	}
 }

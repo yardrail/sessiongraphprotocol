@@ -26,54 +26,58 @@ func TestConnectClientRunRoundTrip(t *testing.T) {
 
 	responses := make(chan observedResponse, 2)
 
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Content-Type"); got != "application/connect+proto" {
-			t.Errorf("content-type = %q, want application/connect+proto", got)
-		}
-		if got := r.Header.Get("Connect-Protocol-Version"); got != "1" {
-			t.Errorf("connect protocol version = %q, want 1", got)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
-			t.Errorf("authorization = %q, want Bearer test-token", got)
-		}
-
-		w.Header().Set("Content-Type", "application/connect+proto")
-		w.WriteHeader(http.StatusOK)
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			t.Fatalf("response writer is not a flusher")
-		}
-
-		eventBytes := marshalOrchestratorEventEnvelope(
-			"5e932639-6265-4f22-bebd-5eb6b16cb25f",
-			"agent.events",
-			[]byte("hello"),
-			"text/plain",
-		)
-		if _, err := w.Write(frameConnectData(eventBytes)); err != nil {
-			t.Fatalf("write event frame: %v", err)
-		}
-		flusher.Flush()
-
-		sessionEndBytes := marshalOrchestratorSessionEndEnvelope("5e932639-6265-4f22-bebd-5eb6b16cb25f")
-		if _, err := w.Write(frameConnectData(sessionEndBytes)); err != nil {
-			t.Fatalf("write session_end frame: %v", err)
-		}
-		flusher.Flush()
-
-		reader := bufio.NewReader(r.Body)
-		for i := 0; i < 2; i++ {
-			payload, err := readEnvelopeFrame(reader)
-			if err != nil {
-				t.Fatalf("read harness frame %d: %v", i, err)
+	srv := httptest.NewUnstartedServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := r.Header.Get("Content-Type"); got != "application/connect+proto" {
+				t.Errorf("content-type = %q, want application/connect+proto", got)
 			}
-			sessionID, success, errMsg, err := unmarshalHarnessEnvelopeForTest(payload)
-			if err != nil {
-				t.Fatalf("decode harness frame %d: %v", i, err)
+			if got := r.Header.Get("Connect-Protocol-Version"); got != "1" {
+				t.Errorf("connect protocol version = %q, want 1", got)
 			}
-			responses <- observedResponse{sessionID: sessionID, success: success, errMsg: errMsg}
-		}
-	}))
+			if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+				t.Errorf("authorization = %q, want Bearer test-token", got)
+			}
+
+			w.Header().Set("Content-Type", "application/connect+proto")
+			w.WriteHeader(http.StatusOK)
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatalf("response writer is not a flusher")
+			}
+
+			eventBytes := marshalOrchestratorEventEnvelope(
+				"5e932639-6265-4f22-bebd-5eb6b16cb25f",
+				"agent.events",
+				[]byte("hello"),
+				"text/plain",
+			)
+			if _, err := w.Write(frameConnectData(eventBytes)); err != nil {
+				t.Fatalf("write event frame: %v", err)
+			}
+			flusher.Flush()
+
+			sessionEndBytes := marshalOrchestratorSessionEndEnvelope(
+				"5e932639-6265-4f22-bebd-5eb6b16cb25f",
+			)
+			if _, err := w.Write(frameConnectData(sessionEndBytes)); err != nil {
+				t.Fatalf("write session_end frame: %v", err)
+			}
+			flusher.Flush()
+
+			reader := bufio.NewReader(r.Body)
+			for i := 0; i < 2; i++ {
+				payload, err := readEnvelopeFrame(reader)
+				if err != nil {
+					t.Fatalf("read harness frame %d: %v", i, err)
+				}
+				sessionID, success, errMsg, err := unmarshalHarnessEnvelopeForTest(payload)
+				if err != nil {
+					t.Fatalf("decode harness frame %d: %v", i, err)
+				}
+				responses <- observedResponse{sessionID: sessionID, success: success, errMsg: errMsg}
+			}
+		}),
+	)
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
 	defer srv.Close()
@@ -89,16 +93,19 @@ func TestConnectClientRunRoundTrip(t *testing.T) {
 	var handledMu sync.Mutex
 	handledCount := 0
 
-	err = client.Run(ctx, func(_ context.Context, incoming OrchestratorEnvelope) (HarnessEnvelope, error) {
-		handledMu.Lock()
-		handledCount++
-		handledMu.Unlock()
+	err = client.Run(
+		ctx,
+		func(_ context.Context, incoming OrchestratorEnvelope) (HarnessEnvelope, error) {
+			handledMu.Lock()
+			handledCount++
+			handledMu.Unlock()
 
-		return HarnessEnvelope{
-			SessionID: incoming.SessionID,
-			Result:    &EventResult{Success: true},
-		}, nil
-	})
+			return HarnessEnvelope{
+				SessionID: incoming.SessionID,
+				Result:    &EventResult{Success: true},
+			}, nil
+		},
+	)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -133,7 +140,11 @@ func frameConnectData(payload []byte) []byte {
 	return frame
 }
 
-func marshalOrchestratorEventEnvelope(sessionID, channel string, payload []byte, contentType string) []byte {
+func marshalOrchestratorEventEnvelope(
+	sessionID, channel string,
+	payload []byte,
+	contentType string,
+) []byte {
 	eventMsg := make([]byte, 0, 64)
 	eventMsg = protowire.AppendTag(eventMsg, fieldEventChannel, protowire.BytesType)
 	eventMsg = protowire.AppendString(eventMsg, channel)

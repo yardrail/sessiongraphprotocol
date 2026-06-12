@@ -8,8 +8,8 @@ arbitrarily complex agent sessions. It models a session as an append-only direct
 rewrites, and subagent sessions.
 
 SGP is intentionally more detailed than a flat request-response transcript. Every message is a
-node, which enables resumption from partial progress (for example, in the middle of a multi-tool
-sequence) without replaying completed work.
+node, which enables resumption from partial progress (for example: in the middle of a multi-tool
+sequence with in-process subagents) without replaying completed work.
 
 ## What The Spec Is For
 

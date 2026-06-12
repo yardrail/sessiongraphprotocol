@@ -30,7 +30,10 @@ type harness struct {
 	sessionID  string // X-Session-ID header for inference gateway (OAC mode)
 }
 
-func newHarness(store sgp.Store, sessionDir, sessionID, ollamaURL, model, systemPrompt, toolsDesc, peersDesc string) (*harness, sgp.ID, error) {
+func newHarness(
+	store sgp.Store,
+	sessionDir, sessionID, ollamaURL, model, systemPrompt, toolsDesc, peersDesc string,
+) (*harness, sgp.ID, error) {
 	var graph *sgp.Graph
 	var headID sgp.ID
 	var err error
@@ -47,7 +50,9 @@ func newHarness(store sgp.Store, sessionDir, sessionID, ollamaURL, model, system
 			return nil, "", fmt.Errorf("persist start event: %w", err)
 		}
 
-		root, sysEvt, appendErr := graph.Append(sgp.Message{System: &sgp.SystemMessage{Text: systemPrompt}})
+		root, sysEvt, appendErr := graph.Append(
+			sgp.Message{System: &sgp.SystemMessage{Text: systemPrompt}},
+		)
 		if appendErr != nil {
 			return nil, "", fmt.Errorf("append system message: %w", appendErr)
 		}
@@ -87,7 +92,11 @@ func newHarness(store sgp.Store, sessionDir, sessionID, ollamaURL, model, system
 
 func (h *harness) handleTurn(ctx context.Context, userInput string) (string, error) {
 	userNode, userEvt, err := h.graph.Append(
-		sgp.Message{User: &sgp.UserMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: userInput}}}}},
+		sgp.Message{
+			User: &sgp.UserMessage{
+				Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: userInput}}},
+			},
+		},
 		h.headID,
 	)
 	if err != nil {
@@ -110,7 +119,14 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("resume nodes: %w", err)
 		}
 
-		resp, err := ollamaChat(ctx, h.ollamaURL, h.model, h.sessionID, toOllamaMessages(nodes), toolDefinitions())
+		resp, err := ollamaChat(
+			ctx,
+			h.ollamaURL,
+			h.model,
+			h.sessionID,
+			toOllamaMessages(nodes),
+			toolDefinitions(),
+		)
 		if err != nil {
 			return "", fmt.Errorf("ollama chat: %w", err)
 		}
@@ -182,8 +198,10 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 					sgp.Message{Tool: &sgp.ToolMessage{
 						ToolCallID: fmt.Sprintf("tc-%d-%d", h.callSeq, teleportIdx),
 						Name:       "teleport",
-						Parts:      []sgp.ContentPart{{Text: &sgp.TextPart{Text: spawnErr.Error()}}},
-						IsError:    true,
+						Parts: []sgp.ContentPart{
+							{Text: &sgp.TextPart{Text: spawnErr.Error()}},
+						},
+						IsError: true,
 					}},
 					h.headID,
 				)

@@ -22,7 +22,13 @@ type Harness struct {
 	consoles map[sgp.ID]*Console
 }
 
-func NewHarness(workspaceRoot string, store sgp.Store, generator ModelGenerator, model string, systemPrompt string) (*Harness, error) {
+func NewHarness(
+	workspaceRoot string,
+	store sgp.Store,
+	generator ModelGenerator,
+	model string,
+	systemPrompt string,
+) (*Harness, error) {
 	workspaceRoot = strings.TrimSpace(workspaceRoot)
 	if workspaceRoot == "" {
 		return nil, errors.New("workspace root is required")
@@ -45,7 +51,11 @@ func NewHarness(workspaceRoot string, store sgp.Store, generator ModelGenerator,
 	}, nil
 }
 
-func (harness *Harness) HandleEvent(ctx context.Context, sessionID, channel, contentType string, payload []byte) (string, error) {
+func (harness *Harness) HandleEvent(
+	ctx context.Context,
+	sessionID, channel, contentType string,
+	payload []byte,
+) (string, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return "", errors.New("session id is required")
 	}
@@ -88,7 +98,12 @@ func (harness *Harness) consoleForSession(ctx context.Context, sessionID sgp.ID)
 		return console, nil
 	}
 
-	console, err := NewConsoleForSession(harness.workspaceRoot, harness.store, harness.systemPrompt, sessionID)
+	console, err := NewConsoleForSession(
+		harness.workspaceRoot,
+		harness.store,
+		harness.systemPrompt,
+		sessionID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create session console: %w", err)
 	}

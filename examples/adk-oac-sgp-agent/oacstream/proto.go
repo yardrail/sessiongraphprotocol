@@ -100,7 +100,10 @@ func UnmarshalOrchestratorEnvelope(data []byte) (OrchestratorEnvelope, error) {
 			}
 			value, m := protowire.ConsumeString(data)
 			if m < 0 {
-				return OrchestratorEnvelope{}, fmt.Errorf("consume session_id: %v", protowire.ParseError(m))
+				return OrchestratorEnvelope{}, fmt.Errorf(
+					"consume session_id: %v",
+					protowire.ParseError(m),
+				)
 			}
 			envelope.SessionID = value
 			data = data[m:]
@@ -110,7 +113,10 @@ func UnmarshalOrchestratorEnvelope(data []byte) (OrchestratorEnvelope, error) {
 			}
 			bytesValue, m := protowire.ConsumeBytes(data)
 			if m < 0 {
-				return OrchestratorEnvelope{}, fmt.Errorf("consume event: %v", protowire.ParseError(m))
+				return OrchestratorEnvelope{}, fmt.Errorf(
+					"consume event: %v",
+					protowire.ParseError(m),
+				)
 			}
 			event, err := unmarshalEvent(bytesValue)
 			if err != nil {
@@ -124,14 +130,21 @@ func UnmarshalOrchestratorEnvelope(data []byte) (OrchestratorEnvelope, error) {
 			}
 			_, m := protowire.ConsumeBytes(data)
 			if m < 0 {
-				return OrchestratorEnvelope{}, fmt.Errorf("consume session_end: %v", protowire.ParseError(m))
+				return OrchestratorEnvelope{}, fmt.Errorf(
+					"consume session_end: %v",
+					protowire.ParseError(m),
+				)
 			}
 			envelope.SessionEnd = true
 			data = data[m:]
 		default:
 			m := protowire.ConsumeFieldValue(number, typ, data)
 			if m < 0 {
-				return OrchestratorEnvelope{}, fmt.Errorf("skip unknown field %d: %v", number, protowire.ParseError(m))
+				return OrchestratorEnvelope{}, fmt.Errorf(
+					"skip unknown field %d: %v",
+					number,
+					protowire.ParseError(m),
+				)
 			}
 			data = data[m:]
 		}
@@ -186,14 +199,21 @@ func unmarshalEvent(data []byte) (Event, error) {
 			}
 			value, m := protowire.ConsumeString(data)
 			if m < 0 {
-				return Event{}, fmt.Errorf("consume event.content_type: %v", protowire.ParseError(m))
+				return Event{}, fmt.Errorf(
+					"consume event.content_type: %v",
+					protowire.ParseError(m),
+				)
 			}
 			event.ContentType = value
 			data = data[m:]
 		default:
 			m := protowire.ConsumeFieldValue(number, typ, data)
 			if m < 0 {
-				return Event{}, fmt.Errorf("skip unknown event field %d: %v", number, protowire.ParseError(m))
+				return Event{}, fmt.Errorf(
+					"skip unknown event field %d: %v",
+					number,
+					protowire.ParseError(m),
+				)
 			}
 			data = data[m:]
 		}

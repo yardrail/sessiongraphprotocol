@@ -1,3 +1,4 @@
+// Package sgpd provides a gRPC client store backed by the sgpd service.
 package sgpd
 
 import (
@@ -35,6 +36,7 @@ func NewClient(baseURL, bearerToken string) *Client {
 		},
 		token: bearerToken,
 	}
+
 	return &Client{
 		rpc: sgpv1connect.NewSGPHarnessServiceClient(
 			&http.Client{Transport: transport},
@@ -49,6 +51,7 @@ func (c *Client) AppendEvent(ctx context.Context, sessionID sgp.ID, event sgp.Ev
 		SessionId: string(sessionID),
 		Event:     convert.EventToProto(event),
 	}))
+
 	return err
 }
 
@@ -60,10 +63,12 @@ func (c *Client) LoadEvents(ctx context.Context, sessionID sgp.ID) ([]sgp.Event,
 	if err != nil {
 		return nil, err
 	}
-	events := make([]sgp.Event, len(resp.Msg.Events))
-	for i, e := range resp.Msg.Events {
+
+	events := make([]sgp.Event, len(resp.Msg.GetEvents()))
+	for i, e := range resp.Msg.GetEvents() {
 		events[i] = convert.EventFromProto(e)
 	}
+
 	return events, nil
 }
 
@@ -76,5 +81,6 @@ type bearerTransport struct {
 func (t *bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	r.Header.Set("Authorization", "Bearer "+t.token)
+
 	return t.base.RoundTrip(r)
 }

@@ -33,7 +33,9 @@ func (agent *Agent) Graph() *sgp.Graph {
 // AddUserTask appends a user task to the canonical history.
 func (agent *Agent) AddUserTask(parentID sgp.ID, task string) (sgp.Node, error) {
 	node, _, err := agent.graph.Append(
-		sgp.Message{User: &sgp.UserMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: task}}}}},
+		sgp.Message{
+			User: &sgp.UserMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: task}}}},
+		},
 		parentID,
 	)
 	if err != nil {
@@ -46,7 +48,11 @@ func (agent *Agent) AddUserTask(parentID sgp.ID, task string) (sgp.Node, error) 
 // AddAssistantPlan appends an assistant planning node.
 func (agent *Agent) AddAssistantPlan(parentID sgp.ID, plan string) (sgp.Node, error) {
 	node, _, err := agent.graph.Append(
-		sgp.Message{Assistant: &sgp.AssistantMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: plan}}}}},
+		sgp.Message{
+			Assistant: &sgp.AssistantMessage{
+				Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: plan}}},
+			},
+		},
 		parentID,
 	)
 	if err != nil {
@@ -58,7 +64,12 @@ func (agent *Agent) AddAssistantPlan(parentID sgp.ID, plan string) (sgp.Node, er
 
 // AddToolResult appends a tool result. Multiple calls against the same parent
 // model parallel tool calls as sibling leaves.
-func (agent *Agent) AddToolResult(parentID sgp.ID, toolName string, output string, success bool) (sgp.Node, error) {
+func (agent *Agent) AddToolResult(
+	parentID sgp.ID,
+	toolName string,
+	output string,
+	success bool,
+) (sgp.Node, error) {
 	node, _, err := agent.graph.Append(
 		sgp.Message{Tool: &sgp.ToolMessage{
 			Name:    toolName,
@@ -75,7 +86,11 @@ func (agent *Agent) AddToolResult(parentID sgp.ID, toolName string, output strin
 }
 
 // SpawnSubagent creates a new SGP subagent session with spawned_from provenance.
-func (agent *Agent) SpawnSubagent(parentNodeID sgp.ID, systemPrompt string, task string) (*Agent, sgp.Node, sgp.Node, error) {
+func (agent *Agent) SpawnSubagent(
+	parentNodeID sgp.ID,
+	systemPrompt string,
+	task string,
+) (*Agent, sgp.Node, sgp.Node, error) {
 	subgraph := sgp.NewGraph(
 		sgp.WithSpawnedFrom(sgp.SpawnReference{
 			SessionID: agent.graph.Session().ID,
@@ -89,7 +104,9 @@ func (agent *Agent) SpawnSubagent(parentNodeID sgp.ID, systemPrompt string, task
 	}
 
 	userTask, _, err := subgraph.Append(
-		sgp.Message{User: &sgp.UserMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: task}}}}},
+		sgp.Message{
+			User: &sgp.UserMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: task}}}},
+		},
 		root.ID,
 	)
 	if err != nil {
@@ -101,9 +118,16 @@ func (agent *Agent) SpawnSubagent(parentNodeID sgp.ID, systemPrompt string, task
 
 // PruneFailedToolCall rewrites history so a failed tool-result leaf is retained
 // only as audit provenance and no longer sits on the canonical resume path.
-func (agent *Agent) PruneFailedToolCall(canonicalParentID, failedToolNodeID sgp.ID, summary string) (sgp.Node, error) {
+func (agent *Agent) PruneFailedToolCall(
+	canonicalParentID, failedToolNodeID sgp.ID,
+	summary string,
+) (sgp.Node, error) {
 	node, _, err := agent.graph.Rewrite(
-		sgp.Message{Assistant: &sgp.AssistantMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: summary}}}}},
+		sgp.Message{
+			Assistant: &sgp.AssistantMessage{
+				Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: summary}}},
+			},
+		},
 		canonicalParentID,
 		failedToolNodeID,
 	)
@@ -116,9 +140,17 @@ func (agent *Agent) PruneFailedToolCall(canonicalParentID, failedToolNodeID sgp.
 
 // SummarizeParallelToolCalls rewrites sibling tool leaves into one assistant
 // summary node so future inference resumes from compacted canonical history.
-func (agent *Agent) SummarizeParallelToolCalls(canonicalParentID sgp.ID, summary string, branchTipIDs ...sgp.ID) (sgp.Node, error) {
+func (agent *Agent) SummarizeParallelToolCalls(
+	canonicalParentID sgp.ID,
+	summary string,
+	branchTipIDs ...sgp.ID,
+) (sgp.Node, error) {
 	node, _, err := agent.graph.Rewrite(
-		sgp.Message{Assistant: &sgp.AssistantMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: summary}}}}},
+		sgp.Message{
+			Assistant: &sgp.AssistantMessage{
+				Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: summary}}},
+			},
+		},
 		canonicalParentID,
 		branchTipIDs...,
 	)

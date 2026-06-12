@@ -45,6 +45,7 @@ type VideoPart struct{ BlobPart }
 // FilePart carries an embedded file, optionally named.
 type FilePart struct {
 	BlobPart
+
 	Name string `json:"name,omitempty"`
 }
 
@@ -136,29 +137,36 @@ func (m Message) TextContent() string {
 
 func contentPartsText(parts []ContentPart) string {
 	var sb strings.Builder
+
 	for _, part := range parts {
 		if part.Text != nil {
 			sb.WriteString(part.Text.Text)
 		}
 	}
+
 	return sb.String()
 }
 
 // valid reports whether exactly one message subtype is set.
 func (m Message) valid() bool {
 	count := 0
+
 	if m.System != nil {
 		count++
 	}
+
 	if m.User != nil {
 		count++
 	}
+
 	if m.Assistant != nil {
 		count++
 	}
+
 	if m.Tool != nil {
 		count++
 	}
+
 	return count == 1
 }
 

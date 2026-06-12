@@ -5,14 +5,24 @@ import (
 	"os"
 )
 
+var (
+	errDatabaseURLRequired     = errors.New("SGPD_DATABASE_URL is required")
+	errHarnessTokenRequired    = errors.New("SGPD_HARNESS_TOKEN is required")
+	errManagementTokenRequired = errors.New("SGPD_MANAGEMENT_TOKEN is required")
+	errInvalidBearerToken      = errors.New("invalid bearer token")
+	errSessionIDRequired       = errors.New("session_id is required")
+	errEventRequired           = errors.New("event is required")
+	errNodeIDRequired          = errors.New("node_id is required")
+)
+
 type config struct {
-	DatabaseURL      string
-	HarnessAddr      string
-	HarnessToken     string
-	ManagementAddr   string
-	ManagementToken  string
-	TLSCert          string
-	TLSKey           string
+	DatabaseURL     string
+	HarnessAddr     string
+	HarnessToken    string
+	ManagementAddr  string
+	ManagementToken string
+	TLSCert         string
+	TLSKey          string
 }
 
 func loadConfig() (config, error) {
@@ -27,14 +37,17 @@ func loadConfig() (config, error) {
 	}
 
 	var errs []error
+
 	if cfg.DatabaseURL == "" {
-		errs = append(errs, errors.New("SGPD_DATABASE_URL is required"))
+		errs = append(errs, errDatabaseURLRequired)
 	}
+
 	if cfg.HarnessToken == "" {
-		errs = append(errs, errors.New("SGPD_HARNESS_TOKEN is required"))
+		errs = append(errs, errHarnessTokenRequired)
 	}
+
 	if cfg.ManagementToken == "" {
-		errs = append(errs, errors.New("SGPD_MANAGEMENT_TOKEN is required"))
+		errs = append(errs, errManagementTokenRequired)
 	}
 	// TLS is optional: omit cert/key for plain HTTP (dev only).
 	return cfg, errors.Join(errs...)
@@ -44,5 +57,6 @@ func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
+
 	return fallback
 }

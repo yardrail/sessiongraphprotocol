@@ -58,7 +58,10 @@ func NewService(baseDir string) (*Service, error) {
 	}, nil
 }
 
-func (service *Service) Create(ctx context.Context, req *session.CreateRequest) (*session.CreateResponse, error) {
+func (service *Service) Create(
+	ctx context.Context,
+	req *session.CreateRequest,
+) (*session.CreateResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("create request is nil")
 	}
@@ -107,11 +110,15 @@ func (service *Service) Create(ctx context.Context, req *session.CreateRequest) 
 	return &session.CreateResponse{Session: copySession(tracked)}, nil
 }
 
-func (service *Service) Get(ctx context.Context, req *session.GetRequest) (*session.GetResponse, error) {
+func (service *Service) Get(
+	ctx context.Context,
+	req *session.GetRequest,
+) (*session.GetResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("get request is nil")
 	}
-	if strings.TrimSpace(req.AppName) == "" || strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.SessionID) == "" {
+	if strings.TrimSpace(req.AppName) == "" || strings.TrimSpace(req.UserID) == "" ||
+		strings.TrimSpace(req.SessionID) == "" {
 		return nil, fmt.Errorf("app_name, user_id, session_id are required")
 	}
 
@@ -148,7 +155,10 @@ func (service *Service) Get(ctx context.Context, req *session.GetRequest) (*sess
 	return &session.GetResponse{Session: copySession(copied)}, nil
 }
 
-func (service *Service) List(_ context.Context, req *session.ListRequest) (*session.ListResponse, error) {
+func (service *Service) List(
+	_ context.Context,
+	req *session.ListRequest,
+) (*session.ListResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("list request is nil")
 	}
@@ -168,7 +178,11 @@ func (service *Service) List(_ context.Context, req *session.ListRequest) (*sess
 			continue
 		}
 
-		state := mergeMaps(service.appState[key.appName], service.userState[key.appName][key.userID], tracked.state)
+		state := mergeMaps(
+			service.appState[key.appName],
+			service.userState[key.appName][key.userID],
+			tracked.state,
+		)
 		copied := &trackedSession{
 			appName:   tracked.appName,
 			userID:    tracked.userID,
@@ -189,7 +203,8 @@ func (service *Service) Delete(_ context.Context, req *session.DeleteRequest) er
 	if req == nil {
 		return fmt.Errorf("delete request is nil")
 	}
-	if strings.TrimSpace(req.AppName) == "" || strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.SessionID) == "" {
+	if strings.TrimSpace(req.AppName) == "" || strings.TrimSpace(req.UserID) == "" ||
+		strings.TrimSpace(req.SessionID) == "" {
 		return fmt.Errorf("app_name, user_id, session_id are required")
 	}
 
@@ -206,7 +221,11 @@ func (service *Service) Delete(_ context.Context, req *session.DeleteRequest) er
 	return nil
 }
 
-func (service *Service) AppendEvent(ctx context.Context, cur session.Session, event *session.Event) error {
+func (service *Service) AppendEvent(
+	ctx context.Context,
+	cur session.Session,
+	event *session.Event,
+) error {
 	if cur == nil {
 		return fmt.Errorf("session is nil")
 	}
@@ -262,8 +281,12 @@ func (service *Service) AppendEvent(ctx context.Context, cur session.Session, ev
 }
 
 // EnsureSession guarantees a tracked session exists for OAC stream events.
-func (service *Service) EnsureSession(ctx context.Context, appName, userID, sessionID string) error {
-	if strings.TrimSpace(appName) == "" || strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" {
+func (service *Service) EnsureSession(
+	ctx context.Context,
+	appName, userID, sessionID string,
+) error {
+	if strings.TrimSpace(appName) == "" || strings.TrimSpace(userID) == "" ||
+		strings.TrimSpace(sessionID) == "" {
 		return fmt.Errorf("app_name, user_id, session_id are required")
 	}
 
@@ -363,7 +386,10 @@ func (service *Service) mergeAppStateLocked(appName string, delta map[string]any
 	return maps.Clone(service.appState[appName])
 }
 
-func (service *Service) mergeUserStateLocked(appName, userID string, delta map[string]any) map[string]any {
+func (service *Service) mergeUserStateLocked(
+	appName, userID string,
+	delta map[string]any,
+) map[string]any {
 	if service.userState[appName] == nil {
 		service.userState[appName] = make(map[string]map[string]any)
 	}
@@ -559,4 +585,3 @@ func copySession(tracked *trackedSession) session.Session {
 		updatedAt: tracked.updatedAt,
 	}
 }
-

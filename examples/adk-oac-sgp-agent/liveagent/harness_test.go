@@ -24,7 +24,13 @@ func TestHarnessHandleEventPersistsPerOACSession(t *testing.T) {
 		t.Fatalf("NewHarness() error = %v", err)
 	}
 
-	response, err := harness.HandleEvent(context.Background(), "oac-session-1", "agent.events", "text/plain", []byte("first request"))
+	response, err := harness.HandleEvent(
+		context.Background(),
+		"oac-session-1",
+		"agent.events",
+		"text/plain",
+		[]byte("first request"),
+	)
 	if err != nil {
 		t.Fatalf("HandleEvent(first) error = %v", err)
 	}
@@ -32,7 +38,13 @@ func TestHarnessHandleEventPersistsPerOACSession(t *testing.T) {
 		t.Fatalf("first response = %q, want ack 1: first request", response)
 	}
 
-	response, err = harness.HandleEvent(context.Background(), "oac-session-1", "agent.events", "application/json", []byte(`{"input":"second request"}`))
+	response, err = harness.HandleEvent(
+		context.Background(),
+		"oac-session-1",
+		"agent.events",
+		"application/json",
+		[]byte(`{"input":"second request"}`),
+	)
 	if err != nil {
 		t.Fatalf("HandleEvent(second) error = %v", err)
 	}
@@ -81,7 +93,12 @@ type stubModelGenerator struct {
 	callCount int
 }
 
-func (generator *stubModelGenerator) GenerateContent(_ context.Context, _ string, contents []*genai.Content, _ *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
+func (generator *stubModelGenerator) GenerateContent(
+	_ context.Context,
+	_ string,
+	contents []*genai.Content,
+	_ *genai.GenerateContentConfig,
+) (*genai.GenerateContentResponse, error) {
 	generator.callCount++
 	lastUser := ""
 	for _, content := range contents {

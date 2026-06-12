@@ -59,7 +59,10 @@ func NewConnectClientWithTLS(url, authToken string, tlsCfg TLSConfig) (*ConnectC
 }
 
 // NewConnectClientWithHTTPClient creates a Connect stream client using a caller-provided HTTP client.
-func NewConnectClientWithHTTPClient(url, authToken string, httpClient *http.Client) (*ConnectClient, error) {
+func NewConnectClientWithHTTPClient(
+	url, authToken string,
+	httpClient *http.Client,
+) (*ConnectClient, error) {
 	url = strings.TrimSpace(url)
 	if url == "" {
 		return nil, errors.New("orchestrator URL is required")
@@ -76,7 +79,9 @@ func NewConnectClientWithHTTPClient(url, authToken string, httpClient *http.Clie
 }
 
 func newHTTPClient(tlsCfg TLSConfig) (*http.Client, error) {
-	if strings.TrimSpace(tlsCfg.CACertPath) == "" && strings.TrimSpace(tlsCfg.ClientCertPath) == "" && strings.TrimSpace(tlsCfg.ClientKeyPath) == "" {
+	if strings.TrimSpace(tlsCfg.CACertPath) == "" &&
+		strings.TrimSpace(tlsCfg.ClientCertPath) == "" &&
+		strings.TrimSpace(tlsCfg.ClientKeyPath) == "" {
 		return &http.Client{}, nil
 	}
 

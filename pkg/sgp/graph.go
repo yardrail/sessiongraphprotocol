@@ -21,6 +21,15 @@ var (
 	ErrNodeNotFound = errors.New("node not found")
 	// ErrInvalidRoot indicates that a root append was attempted after initialization.
 	ErrInvalidRoot = errors.New("root node must be the first node in the graph")
+
+	errRewriteRequiresCanonicalParent   = errors.New("rewrite requires a canonical parent")
+	errRewriteRequiresSynthesizedSource = errors.New(
+		"rewrite requires at least one synthesized source",
+	)
+	errInvalidEndReason   = errors.New("invalid end reason")
+	errMissingEventName   = errors.New("missing event name for kind")
+	errMessageSubtype     = errors.New("message must have exactly one subtype set")
+	errNodeReferenceEmpty = errors.New("node reference cannot be empty")
 )
 
 // IDGenerator creates stable string identifiers for sessions and nodes.
@@ -211,16 +220,20 @@ func (graph *Graph) Append(message Message, parentIDs ...ID) (Node, Event, error
 }
 
 // Rewrite creates a rewrite node and emits a history rewritten event.
-func (graph *Graph) Rewrite(message Message, parentID ID, synthesizedFrom ...ID) (Node, Event, error) {
+func (graph *Graph) Rewrite(
+	message Message,
+	parentID ID,
+	synthesizedFrom ...ID,
+) (Node, Event, error) {
 	graph.mu.Lock()
 	defer graph.mu.Unlock()
 
 	if parentID == "" {
-		return Node{}, Event{}, errors.New("rewrite requires a canonical parent")
+		return Node{}, Event{}, errRewriteRequiresCanonicalParent
 	}
 
 	if len(synthesizedFrom) == 0 {
-		return Node{}, Event{}, errors.New("rewrite requires at least one synthesized source")
+		return Node{}, Event{}, errRewriteRequiresSynthesizedSource
 	}
 
 	node, event, err := graph.appendNode(
@@ -242,7 +255,13 @@ func (graph *Graph) Rewrite(message Message, parentID ID, synthesizedFrom ...ID)
 // emitted event is empty when End is called on a started graph with no nodes.
 func (graph *Graph) End(reason EndReason) (Event, error) {
 	if reason != EndReasonComplete && reason != EndReasonFailed {
-		return Event{}, fmt.Errorf("invalid end reason %q: must be %q or %q", reason, EndReasonComplete, EndReasonFailed)
+		return Event{}, fmt.Errorf(
+			"%w %q: must be %q or %q",
+			errInvalidEndReason,
+			reason,
+			EndReasonComplete,
+			EndReasonFailed,
+		)
 	}
 
 	graph.mu.Lock()
@@ -318,8 +337,7 @@ func (graph *Graph) NeedsResponse(nodeID ID) (bool, error) {
 func (graph *Graph) appendNode(
 	kind EventKind,
 	message Message,
-	parentIDs []ID,
-	synthesizedFrom []ID,
+	parentIDs, synthesizedFrom []ID,
 ) (Node, Event, error) {
 	if graph.closed {
 		return Node{}, Event{}, ErrSessionClosed
@@ -330,11 +348,11 @@ func (graph *Graph) appendNode(
 	}
 
 	if graph.eventNames.Name(kind) == "" {
-		return Node{}, Event{}, fmt.Errorf("missing event name for kind %d", kind)
+		return Node{}, Event{}, fmt.Errorf("%w %d", errMissingEventName, kind)
 	}
 
 	if !message.valid() {
-		return Node{}, Event{}, errors.New("message must have exactly one subtype set")
+		return Node{}, Event{}, errMessageSubtype
 	}
 
 	if len(parentIDs) == 0 && len(graph.nodes) != 0 {
@@ -386,7 +404,7 @@ func (graph *Graph) validateNodeReferences(ids []ID) ([]ID, error) {
 
 	for _, nodeID := range ids {
 		if nodeID == "" {
-			return nil, errors.New("node reference cannot be empty")
+			return nil, errNodeReferenceEmpty
 		}
 
 		if _, exists := graph.nodes[nodeID]; !exists {
@@ -415,6 +433,7 @@ func (graph *Graph) resumeNodes(nodeID ID) ([]Node, error) {
 
 	for len(current.ParentIDs) != 0 {
 		parentID := current.ParentIDs[0]
+
 		parent, exists := graph.nodes[parentID]
 		if !exists {
 			return nil, fmt.Errorf("%w: %s", ErrNodeNotFound, parentID)
@@ -457,7 +476,9 @@ func copySystemMessage(m *SystemMessage) *SystemMessage {
 	if m == nil {
 		return nil
 	}
+
 	cp := *m
+
 	return &cp
 }
 
@@ -465,6 +486,7 @@ func copyUserMessage(m *UserMessage) *UserMessage {
 	if m == nil {
 		return nil
 	}
+
 	return &UserMessage{Parts: copyContentParts(m.Parts)}
 }
 
@@ -472,12 +494,15 @@ func copyAssistantMessage(m *AssistantMessage) *AssistantMessage {
 	if m == nil {
 		return nil
 	}
+
 	cp := &AssistantMessage{Refusal: m.Refusal}
 	cp.Parts = copyContentParts(m.Parts)
+
 	if len(m.ToolCalls) > 0 {
 		cp.ToolCalls = make([]ToolCall, len(m.ToolCalls))
 		copy(cp.ToolCalls, m.ToolCalls)
 	}
+
 	return cp
 }
 
@@ -485,6 +510,7 @@ func copyToolMessage(m *ToolMessage) *ToolMessage {
 	if m == nil {
 		return nil
 	}
+
 	return &ToolMessage{
 		ToolCallID: m.ToolCallID,
 		Name:       m.Name,
@@ -497,31 +523,40 @@ func copyContentParts(parts []ContentPart) []ContentPart {
 	if len(parts) == 0 {
 		return nil
 	}
+
 	cp := make([]ContentPart, len(parts))
+
 	for i, part := range parts {
 		cp[i] = copyContentPart(part)
 	}
+
 	return cp
 }
 
 func copyContentPart(part ContentPart) ContentPart {
 	var cp ContentPart
+
 	if part.Text != nil {
 		v := *part.Text
 		cp.Text = &v
 	}
+
 	if part.Image != nil {
 		cp.Image = &ImagePart{BlobPart: copyBlobPart(part.Image.BlobPart)}
 	}
+
 	if part.Audio != nil {
 		cp.Audio = &AudioPart{BlobPart: copyBlobPart(part.Audio.BlobPart)}
 	}
+
 	if part.Video != nil {
 		cp.Video = &VideoPart{BlobPart: copyBlobPart(part.Video.BlobPart)}
 	}
+
 	if part.File != nil {
 		cp.File = &FilePart{BlobPart: copyBlobPart(part.File.BlobPart), Name: part.File.Name}
 	}
+
 	return cp
 }
 
@@ -529,8 +564,10 @@ func copyBlobPart(b BlobPart) BlobPart {
 	if len(b.Data) == 0 {
 		return BlobPart{MimeType: b.MimeType}
 	}
+
 	data := make([]byte, len(b.Data))
 	copy(data, b.Data)
+
 	return BlobPart{MimeType: b.MimeType, Data: data}
 }
 
@@ -539,9 +576,9 @@ func copySpawnReference(reference *SpawnReference) *SpawnReference {
 		return nil
 	}
 
-	copy := *reference
+	cloned := *reference
 
-	return &copy
+	return &cloned
 }
 
 func copyEvent(event Event) Event {
@@ -566,20 +603,12 @@ func copyEvents(events []Event) []Event {
 	return cloned
 }
 
-func copyNodeValue(node *Node) Node {
-	if node == nil {
-		return Node{}
-	}
-
-	return copyNode(*node)
-}
-
 func copyNodePointer(node *Node) *Node {
 	if node == nil {
 		return nil
 	}
 
-	copy := copyNode(*node)
+	cloned := copyNode(*node)
 
-	return &copy
+	return &cloned
 }

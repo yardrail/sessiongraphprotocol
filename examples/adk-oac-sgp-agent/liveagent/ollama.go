@@ -114,7 +114,13 @@ func NewOllamaGenerator(baseURL, model string) *OllamaGenerator {
 	}
 }
 
-func PromptBeforePull(ctx context.Context, input *bufio.Reader, out io.Writer, client *OllamaClient, model string) error {
+func PromptBeforePull(
+	ctx context.Context,
+	input *bufio.Reader,
+	out io.Writer,
+	client *OllamaClient,
+	model string,
+) error {
 	if input == nil {
 		return errors.New("input reader is required")
 	}
@@ -181,7 +187,12 @@ func (client *OllamaClient) PullModel(ctx context.Context, model string, out io.
 		return fmt.Errorf("marshal pull request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+"/api/pull", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.baseURL+"/api/pull",
+		bytes.NewReader(body),
+	)
 	if err != nil {
 		return fmt.Errorf("create pull request: %w", err)
 	}
@@ -195,7 +206,11 @@ func (client *OllamaClient) PullModel(ctx context.Context, model string, out io.
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return fmt.Errorf("pull ollama model: unexpected status %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+		return fmt.Errorf(
+			"pull ollama model: unexpected status %s: %s",
+			resp.Status,
+			strings.TrimSpace(string(raw)),
+		)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -222,7 +237,12 @@ func (client *OllamaClient) PullModel(ctx context.Context, model string, out io.
 	return nil
 }
 
-func (generator *OllamaGenerator) GenerateContent(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
+func (generator *OllamaGenerator) GenerateContent(
+	ctx context.Context,
+	model string,
+	contents []*genai.Content,
+	config *genai.GenerateContentConfig,
+) (*genai.GenerateContentResponse, error) {
 	if generator == nil || generator.client == nil {
 		return nil, errors.New("ollama generator is not configured")
 	}
@@ -243,7 +263,12 @@ func (generator *OllamaGenerator) GenerateContent(ctx context.Context, model str
 		return nil, fmt.Errorf("marshal ollama chat request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, generator.client.baseURL+"/api/chat", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		generator.client.baseURL+"/api/chat",
+		bytes.NewReader(body),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create ollama chat request: %w", err)
 	}
@@ -257,7 +282,11 @@ func (generator *OllamaGenerator) GenerateContent(ctx context.Context, model str
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return nil, fmt.Errorf("chat with ollama: unexpected status %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+		return nil, fmt.Errorf(
+			"chat with ollama: unexpected status %s: %s",
+			resp.Status,
+			strings.TrimSpace(string(raw)),
+		)
 	}
 
 	var chatResponse ollamaChatResponse
@@ -273,10 +302,19 @@ func (generator *OllamaGenerator) GenerateContent(ctx context.Context, model str
 	return synthesizeGenerateContentResponse(envelope), nil
 }
 
-func buildOllamaMessages(config *genai.GenerateContentConfig, contents []*genai.Content) []ollamaMessage {
+func buildOllamaMessages(
+	config *genai.GenerateContentConfig,
+	contents []*genai.Content,
+) []ollamaMessage {
 	messages := make([]ollamaMessage, 0, len(contents)+1)
 	if config != nil && config.SystemInstruction != nil {
-		messages = append(messages, ollamaMessage{Role: "system", Content: contentToText(config.SystemInstruction) + "\n\n" + ollamaActionPrompt})
+		messages = append(
+			messages,
+			ollamaMessage{
+				Role:    "system",
+				Content: contentToText(config.SystemInstruction) + "\n\n" + ollamaActionPrompt,
+			},
+		)
 	} else {
 		messages = append(messages, ollamaMessage{Role: "system", Content: ollamaActionPrompt})
 	}
@@ -345,9 +383,15 @@ func parseOllamaAction(raw string) (*ollamaActionEnvelope, error) {
 	return &ollamaActionEnvelope{Type: "final", Content: raw}, nil
 }
 
-func synthesizeGenerateContentResponse(envelope *ollamaActionEnvelope) *genai.GenerateContentResponse {
+func synthesizeGenerateContentResponse(
+	envelope *ollamaActionEnvelope,
+) *genai.GenerateContentResponse {
 	if envelope == nil {
-		return &genai.GenerateContentResponse{Candidates: []*genai.Candidate{{Content: &genai.Content{Role: string(genai.RoleModel)}}}}
+		return &genai.GenerateContentResponse{
+			Candidates: []*genai.Candidate{
+				{Content: &genai.Content{Role: string(genai.RoleModel)}},
+			},
+		}
 	}
 
 	candidate := &genai.Candidate{Content: &genai.Content{Role: string(genai.RoleModel)}}

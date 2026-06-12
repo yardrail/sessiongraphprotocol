@@ -56,11 +56,19 @@ func main() {
 	}
 
 	model := flag.String("model", "llama3.2", "Ollama model name")
-	sessionDir := flag.String("session-dir", ".sgp-sessions", "Directory to store session graphs (file store)")
+	sessionDir := flag.String(
+		"session-dir",
+		".sgp-sessions",
+		"Directory to store session graphs (file store)",
+	)
 	sessionID := flag.String("session-id", "", "Resume an existing session (empty = new)")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama base URL")
 	system := flag.String("system", defaultSystemPrompt, "System prompt")
-	sgpdURL := flag.String("sgpd-url", "", "sgpd server URL (e.g. http://localhost:9090); uses sgpd instead of local file store")
+	sgpdURL := flag.String(
+		"sgpd-url",
+		"",
+		"sgpd server URL (e.g. http://localhost:9090); uses sgpd instead of local file store",
+	)
 	sgpdToken := flag.String("sgpd-token", "", "Bearer token for sgpd harness service")
 	var peers stringSlice
 	flag.Var(&peers, "peer", "Peer harness as path=description (repeatable)")
@@ -86,7 +94,16 @@ func main() {
 	if peersDesc != "" {
 		systemPrompt += "\n\n" + peersDesc
 	}
-	h, sid, err := newHarness(store, *sessionDir, *sessionID, *ollamaURL, *model, systemPrompt, "Tools: calculate (math expressions), teleport (switch harness).", peersDesc)
+	h, sid, err := newHarness(
+		store,
+		*sessionDir,
+		*sessionID,
+		*ollamaURL,
+		*model,
+		systemPrompt,
+		"Tools: calculate (math expressions), teleport (switch harness).",
+		peersDesc,
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

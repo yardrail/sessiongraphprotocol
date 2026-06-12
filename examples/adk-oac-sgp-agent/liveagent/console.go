@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
-	sgp "github.com/restrukt-ai/sessiongraphprotocol/pkg/sgp"
 	"github.com/restrukt-ai/sessiongraphprotocol/examples/adk-oac-sgp-agent/codingagent"
+	sgp "github.com/restrukt-ai/sessiongraphprotocol/pkg/sgp"
 	"google.golang.org/genai"
 )
 
@@ -29,7 +29,12 @@ const (
 )
 
 type ModelGenerator interface {
-	GenerateContent(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error)
+	GenerateContent(
+		ctx context.Context,
+		model string,
+		contents []*genai.Content,
+		config *genai.GenerateContentConfig,
+	) (*genai.GenerateContentResponse, error)
 }
 
 type Console struct {
@@ -54,7 +59,12 @@ func NewConsole(workspaceRoot string, store sgp.Store, systemPrompt string) (*Co
 	return newConsole(workspaceRoot, store, systemPrompt, nil)
 }
 
-func NewConsoleForSession(workspaceRoot string, store sgp.Store, systemPrompt string, sessionID sgp.ID) (*Console, error) {
+func NewConsoleForSession(
+	workspaceRoot string,
+	store sgp.Store,
+	systemPrompt string,
+	sessionID sgp.ID,
+) (*Console, error) {
 	if strings.TrimSpace(string(sessionID)) == "" {
 		return nil, errors.New("session id is required")
 	}
@@ -62,7 +72,12 @@ func NewConsoleForSession(workspaceRoot string, store sgp.Store, systemPrompt st
 	return newConsole(workspaceRoot, store, systemPrompt, &sessionID)
 }
 
-func newConsole(workspaceRoot string, store sgp.Store, systemPrompt string, sessionID *sgp.ID) (*Console, error) {
+func newConsole(
+	workspaceRoot string,
+	store sgp.Store,
+	systemPrompt string,
+	sessionID *sgp.ID,
+) (*Console, error) {
 	workspaceRoot = strings.TrimSpace(workspaceRoot)
 	if workspaceRoot == "" {
 		return nil, errors.New("workspace root is required")
@@ -98,7 +113,9 @@ func newConsole(workspaceRoot string, store sgp.Store, systemPrompt string, sess
 			SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
 			Tools:             toolDeclarations(),
 			ToolConfig: &genai.ToolConfig{
-				FunctionCallingConfig: &genai.FunctionCallingConfig{Mode: genai.FunctionCallingConfigModeAuto},
+				FunctionCallingConfig: &genai.FunctionCallingConfig{
+					Mode: genai.FunctionCallingConfigModeAuto,
+				},
 			},
 		},
 	}
@@ -130,7 +147,13 @@ func (console *Console) Close(ctx context.Context) error {
 	return console.persist(ctx)
 }
 
-func (console *Console) Run(ctx context.Context, in io.Reader, out io.Writer, generator ModelGenerator, model string) error {
+func (console *Console) Run(
+	ctx context.Context,
+	in io.Reader,
+	out io.Writer,
+	generator ModelGenerator,
+	model string,
+) error {
 	if generator == nil {
 		return errors.New("model generator is required")
 	}
@@ -169,7 +192,12 @@ func (console *Console) Run(ctx context.Context, in io.Reader, out io.Writer, ge
 			fmt.Fprintln(out, ":help shows commands, :session prints session metadata, :quit exits")
 			continue
 		case ":session":
-			fmt.Fprintf(out, "session: %s\nworkspace: %s\n", console.SessionID(), console.workspaceRoot)
+			fmt.Fprintf(
+				out,
+				"session: %s\nworkspace: %s\n",
+				console.SessionID(),
+				console.workspaceRoot,
+			)
 			continue
 		}
 
@@ -183,7 +211,12 @@ func (console *Console) Run(ctx context.Context, in io.Reader, out io.Writer, ge
 	}
 }
 
-func (console *Console) HandleUserTurn(ctx context.Context, generator ModelGenerator, model string, input string) (string, error) {
+func (console *Console) HandleUserTurn(
+	ctx context.Context,
+	generator ModelGenerator,
+	model string,
+	input string,
+) (string, error) {
 	userNode, err := console.agent.AddUserTask(console.headID, input)
 	if err != nil {
 		return "", fmt.Errorf("append user task: %w", err)
@@ -218,7 +251,11 @@ func (console *Console) HandleUserTurn(ctx context.Context, generator ModelGener
 			}
 
 			node, _, appendErr := console.agent.Graph().Append(
-				sgp.Message{Assistant: &sgp.AssistantMessage{Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: response}}}}},
+				sgp.Message{
+					Assistant: &sgp.AssistantMessage{
+						Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: response}}},
+					},
+				},
 				console.headID,
 			)
 			if appendErr != nil {
@@ -283,7 +320,10 @@ func (console *Console) buildPromptContents() ([]*genai.Content, error) {
 			}
 		case message.Tool != nil:
 			if text := message.TextContent(); text != "" {
-				contents = append(contents, genai.NewContentFromText("Tool result:\n"+text, genai.RoleUser))
+				contents = append(
+					contents,
+					genai.NewContentFromText("Tool result:\n"+text, genai.RoleUser),
+				)
 			}
 		}
 	}
@@ -291,7 +331,11 @@ func (console *Console) buildPromptContents() ([]*genai.Content, error) {
 	return contents, nil
 }
 
-func (console *Console) executeFunctionCalls(ctx context.Context, planNodeID sgp.ID, calls []*genai.FunctionCall) ([]toolOutcome, []*genai.FunctionResponse, error) {
+func (console *Console) executeFunctionCalls(
+	ctx context.Context,
+	planNodeID sgp.ID,
+	calls []*genai.FunctionCall,
+) ([]toolOutcome, []*genai.FunctionResponse, error) {
 	outcomes := make([]toolOutcome, len(calls))
 
 	var wg sync.WaitGroup
@@ -309,7 +353,12 @@ func (console *Console) executeFunctionCalls(ctx context.Context, planNodeID sgp
 
 	for index := range outcomes {
 		outcome := &outcomes[index]
-		node, err := console.agent.AddToolResult(planNodeID, outcome.name, outcome.output, outcome.success)
+		node, err := console.agent.AddToolResult(
+			planNodeID,
+			outcome.name,
+			outcome.output,
+			outcome.success,
+		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("append tool result: %w", err)
 		}
@@ -331,8 +380,16 @@ func (console *Console) executeFunctionCalls(ctx context.Context, planNodeID sgp
 
 	switch {
 	case len(outcomes) == 1 && !outcomes[0].success:
-		summary := fmt.Sprintf("Ignored failed tool call %s and continued with the remaining context. Failure: %s", outcomes[0].name, truncate(outcomes[0].output, 240))
-		rewriteNode, err := console.agent.PruneFailedToolCall(planNodeID, outcomes[0].nodeID, summary)
+		summary := fmt.Sprintf(
+			"Ignored failed tool call %s and continued with the remaining context. Failure: %s",
+			outcomes[0].name,
+			truncate(outcomes[0].output, 240),
+		)
+		rewriteNode, err := console.agent.PruneFailedToolCall(
+			planNodeID,
+			outcomes[0].nodeID,
+			summary,
+		)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -340,7 +397,10 @@ func (console *Console) executeFunctionCalls(ctx context.Context, planNodeID sgp
 		console.headID = rewriteNode.ID
 	case len(outcomes) > 1:
 		summary := summarizeParallelOutcomes(outcomes)
-		rewriteNode, err := console.agent.SummarizeParallelToolCalls(planNodeID, summary, branchIDs...)
+		rewriteNode, err := console.agent.SummarizeParallelToolCalls(
+			planNodeID,
+			summary,
+			branchIDs...)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -353,7 +413,11 @@ func (console *Console) executeFunctionCalls(ctx context.Context, planNodeID sgp
 	return outcomes, functionResponses, nil
 }
 
-func (console *Console) executeFunctionCall(ctx context.Context, planNodeID sgp.ID, call *genai.FunctionCall) toolOutcome {
+func (console *Console) executeFunctionCall(
+	ctx context.Context,
+	planNodeID sgp.ID,
+	call *genai.FunctionCall,
+) toolOutcome {
 	if call == nil {
 		return toolOutcome{name: "unknown", output: "nil function call", success: false}
 	}
@@ -573,7 +637,11 @@ func (console *Console) grepText(args map[string]any) (map[string]any, string, e
 	return payload, truncate(output, maxOutputChars), nil
 }
 
-func (console *Console) spawnSubagentSearch(ctx context.Context, parentNodeID sgp.ID, args map[string]any) (map[string]any, string, *codingagent.Agent, error) {
+func (console *Console) spawnSubagentSearch(
+	ctx context.Context,
+	parentNodeID sgp.ID,
+	args map[string]any,
+) (map[string]any, string, *codingagent.Agent, error) {
 	question := strings.TrimSpace(stringArg(args, "question", ""))
 	query := strings.TrimSpace(stringArg(args, "query", question))
 	if question == "" {
@@ -589,12 +657,19 @@ func (console *Console) spawnSubagentSearch(ctx context.Context, parentNodeID sg
 		limit = defaultGrepLimit
 	}
 
-	subagent, _, taskNode, err := console.agent.SpawnSubagent(parentNodeID, "You are a focused repository search subagent.", question)
+	subagent, _, taskNode, err := console.agent.SpawnSubagent(
+		parentNodeID,
+		"You are a focused repository search subagent.",
+		question,
+	)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("spawn subagent: %w", err)
 	}
 
-	planNode, err := subagent.AddAssistantPlan(taskNode.ID, fmt.Sprintf("Searching the workspace for %q", query))
+	planNode, err := subagent.AddAssistantPlan(
+		taskNode.ID,
+		fmt.Sprintf("Searching the workspace for %q", query),
+	)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("subagent plan: %w", err)
 	}
@@ -614,7 +689,8 @@ func (console *Console) spawnSubagentSearch(ctx context.Context, parentNodeID sg
 		return nil, "", nil, fmt.Errorf("subagent summary: %w", err)
 	}
 
-	if _, endErr := subagent.Graph().End(); endErr != nil && !errors.Is(endErr, sgp.ErrSessionClosed) {
+	if _, endErr := subagent.Graph().End(); endErr != nil &&
+		!errors.Is(endErr, sgp.ErrSessionClosed) {
 		return nil, "", nil, fmt.Errorf("end subagent session: %w", endErr)
 	}
 
@@ -700,8 +776,14 @@ func toolDeclarations() []*genai.Tool {
 				ParametersJsonSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path_prefix": map[string]any{"type": "string", "description": "Optional subdirectory relative to the workspace root."},
-						"limit":       map[string]any{"type": "integer", "description": "Maximum number of files to return."},
+						"path_prefix": map[string]any{
+							"type":        "string",
+							"description": "Optional subdirectory relative to the workspace root.",
+						},
+						"limit": map[string]any{
+							"type":        "integer",
+							"description": "Maximum number of files to return.",
+						},
 					},
 				},
 			},
@@ -711,9 +793,18 @@ func toolDeclarations() []*genai.Tool {
 				ParametersJsonSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path":       map[string]any{"type": "string", "description": "Workspace-relative file path."},
-						"start_line": map[string]any{"type": "integer", "description": "1-based starting line."},
-						"end_line":   map[string]any{"type": "integer", "description": "1-based ending line."},
+						"path": map[string]any{
+							"type":        "string",
+							"description": "Workspace-relative file path.",
+						},
+						"start_line": map[string]any{
+							"type":        "integer",
+							"description": "1-based starting line.",
+						},
+						"end_line": map[string]any{
+							"type":        "integer",
+							"description": "1-based ending line.",
+						},
 					},
 					"required": []string{"path"},
 				},
@@ -724,9 +815,18 @@ func toolDeclarations() []*genai.Tool {
 				ParametersJsonSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"query":       map[string]any{"type": "string", "description": "Case-insensitive search text."},
-						"path_prefix": map[string]any{"type": "string", "description": "Optional subdirectory relative to the workspace root."},
-						"limit":       map[string]any{"type": "integer", "description": "Maximum number of matches to return."},
+						"query": map[string]any{
+							"type":        "string",
+							"description": "Case-insensitive search text.",
+						},
+						"path_prefix": map[string]any{
+							"type":        "string",
+							"description": "Optional subdirectory relative to the workspace root.",
+						},
+						"limit": map[string]any{
+							"type":        "integer",
+							"description": "Maximum number of matches to return.",
+						},
 					},
 					"required": []string{"query"},
 				},
@@ -737,10 +837,22 @@ func toolDeclarations() []*genai.Tool {
 				ParametersJsonSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"question":    map[string]any{"type": "string", "description": "Question the subagent is answering."},
-						"query":       map[string]any{"type": "string", "description": "Search text for the subagent to use."},
-						"path_prefix": map[string]any{"type": "string", "description": "Optional subdirectory relative to the workspace root."},
-						"limit":       map[string]any{"type": "integer", "description": "Maximum number of matches to inspect."},
+						"question": map[string]any{
+							"type":        "string",
+							"description": "Question the subagent is answering.",
+						},
+						"query": map[string]any{
+							"type":        "string",
+							"description": "Search text for the subagent to use.",
+						},
+						"path_prefix": map[string]any{
+							"type":        "string",
+							"description": "Optional subdirectory relative to the workspace root.",
+						},
+						"limit": map[string]any{
+							"type":        "integer",
+							"description": "Maximum number of matches to inspect.",
+						},
 					},
 				},
 			},

@@ -1,4 +1,5 @@
-package jsonstore
+// Package jsonstore persists SGP session event logs as append-only JSONL files on local disk.
+package jsonstore //nolint:revive // package name differs from directory intentionally
 
 import (
 	"bufio"
@@ -24,12 +25,21 @@ type JSONFileStore struct {
 	baseDir string
 }
 
-var _ sgp.Store = (*JSONFileStore)(nil)
+const (
+	dirPerm  = 0o755
+	filePerm = 0o644
+)
+
+var (
+	_ sgp.Store = (*JSONFileStore)(nil)
+
+	errBaseDirRequired = errors.New("base dir is required")
+)
 
 // NewJSONFileStore creates a store rooted at baseDir.
 func NewJSONFileStore(baseDir string) (*JSONFileStore, error) {
 	if strings.TrimSpace(baseDir) == "" {
-		return nil, errors.New("base dir is required")
+		return nil, errBaseDirRequired
 	}
 
 	return &JSONFileStore{baseDir: baseDir}, nil
@@ -37,8 +47,13 @@ func NewJSONFileStore(baseDir string) (*JSONFileStore, error) {
 
 // AppendEvent marshals event as a single JSON line and appends it to the
 // session's event log file. The file is created on the first append.
-func (store *JSONFileStore) AppendEvent(ctx context.Context, sessionID sgp.ID, event sgp.Event) error {
-	if err := ctx.Err(); err != nil {
+func (store *JSONFileStore) AppendEvent(
+	ctx context.Context,
+	sessionID sgp.ID,
+	event sgp.Event,
+) error {
+	err := ctx.Err()
+	if err != nil {
 		return err
 	}
 
@@ -47,17 +62,23 @@ func (store *JSONFileStore) AppendEvent(ctx context.Context, sessionID sgp.ID, e
 		return fmt.Errorf("marshal event: %w", err)
 	}
 
-	if err = os.MkdirAll(store.baseDir, 0o755); err != nil {
+	err = os.MkdirAll(store.baseDir, dirPerm)
+	if err != nil {
 		return fmt.Errorf("create base dir: %w", err)
 	}
 
-	f, err := os.OpenFile(store.pathForSession(sessionID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(
+		store.pathForSession(sessionID),
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
+		filePerm,
+	)
 	if err != nil {
 		return fmt.Errorf("open session file: %w", err)
 	}
 	defer f.Close()
 
-	if _, err = fmt.Fprintf(f, "%s\n", data); err != nil {
+	_, err = fmt.Fprintf(f, "%s\n", data)
+	if err != nil {
 		return fmt.Errorf("write event: %w", err)
 	}
 
@@ -69,7 +90,8 @@ func (store *JSONFileStore) AppendEvent(ctx context.Context, sessionID sgp.ID, e
 // the session. The Kind field is restored on each event using
 // [sgp.ClassifyEvent].
 func (store *JSONFileStore) LoadEvents(ctx context.Context, sessionID sgp.ID) ([]sgp.Event, error) {
-	if err := ctx.Err(); err != nil {
+	err := ctx.Err()
+	if err != nil {
 		return nil, err
 	}
 
@@ -78,22 +100,28 @@ func (store *JSONFileStore) LoadEvents(ctx context.Context, sessionID sgp.ID) ([
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("%w: %s", sgp.ErrGraphNotFound, sessionID)
 		}
+
 		return nil, fmt.Errorf("open session file: %w", err)
 	}
 	defer f.Close()
 
 	var events []sgp.Event
+
 	scanner := bufio.NewScanner(f)
 	lineNum := 0
+
 	for scanner.Scan() {
 		lineNum++
+
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
 
 		var event sgp.Event
-		if err = json.Unmarshal(line, &event); err != nil {
+
+		err = json.Unmarshal(line, &event)
+		if err != nil {
 			return nil, fmt.Errorf("parse event at line %d: %w", lineNum, err)
 		}
 
@@ -101,7 +129,8 @@ func (store *JSONFileStore) LoadEvents(ctx context.Context, sessionID sgp.ID) ([
 		events = append(events, event)
 	}
 
-	if err = scanner.Err(); err != nil {
+	err = scanner.Err()
+	if err != nil {
 		return nil, fmt.Errorf("read session file: %w", err)
 	}
 
@@ -110,5 +139,6 @@ func (store *JSONFileStore) LoadEvents(ctx context.Context, sessionID sgp.ID) ([
 
 func (store *JSONFileStore) pathForSession(sessionID sgp.ID) string {
 	encoded := url.PathEscape(string(sessionID))
+
 	return filepath.Join(store.baseDir, encoded+".jsonl")
 }

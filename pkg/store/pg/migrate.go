@@ -25,10 +25,14 @@ func Migrate(ctx context.Context, databaseURL string, pool *pgxpool.Pool) error 
 	defer db.Close()
 
 	goose.SetBaseFS(migrationsFS)
-	if err := goose.SetDialect("postgres"); err != nil {
+
+	err = goose.SetDialect("postgres")
+	if err != nil {
 		return fmt.Errorf("goose dialect: %w", err)
 	}
-	if err := goose.Up(db, "migrations"); err != nil {
+
+	err = goose.Up(db, "migrations")
+	if err != nil {
 		return fmt.Errorf("goose up: %w", err)
 	}
 
@@ -41,15 +45,20 @@ func Migrate(ctx context.Context, databaseURL string, pool *pgxpool.Pool) error 
 	defer conn.Release()
 
 	var count int
-	if err := conn.QueryRow(ctx,
+
+	err = conn.QueryRow(ctx,
 		`SELECT count(*) FROM ag_catalog.ag_graph WHERE name = 'sgp'`,
-	).Scan(&count); err != nil {
+	).Scan(&count)
+	if err != nil {
 		return fmt.Errorf("check age graph: %w", err)
 	}
+
 	if count == 0 {
-		if _, err := conn.Exec(ctx, `SELECT ag_catalog.create_graph('sgp')`); err != nil {
+		_, err = conn.Exec(ctx, `SELECT ag_catalog.create_graph('sgp')`)
+		if err != nil {
 			return fmt.Errorf("create age graph: %w", err)
 		}
 	}
+
 	return nil
 }

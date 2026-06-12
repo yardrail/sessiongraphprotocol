@@ -11,6 +11,12 @@ import (
 var (
 	// ErrGraphNotFound indicates that a persisted graph could not be located.
 	ErrGraphNotFound = errors.New("graph not found")
+
+	errUnexpectedSessionStart = errors.New("unexpected second session.start event")
+	errMissingNode            = errors.New("missing node")
+	errNodeIDRequired         = errors.New("node id is required")
+	errNodeSessionIDMismatch  = errors.New("node has wrong session id")
+	errMissingSessionStart    = errors.New("event log missing session.start event")
 )
 
 // Store persists SGP session events as an append-only log.
@@ -39,11 +45,14 @@ func ClassifyEvent(event Event) EventKind {
 		if len(event.Node.SynthesizedFrom) > 0 {
 			return EventKindHistoryRewritten
 		}
+
 		return EventKindNodeAppended
 	}
+
 	if event.Reason != "" || event.TerminalNodeID != "" {
 		return EventKindSessionEnded
 	}
+
 	return EventKindSessionStart
 }
 
@@ -75,62 +84,149 @@ func RestoreFromEvents(events []Event) (*Graph, error) {
 		kind := ClassifyEvent(event)
 		event.Kind = kind
 
-		switch kind {
-		case EventKindSessionStart:
-			if graph.started {
-				return nil, fmt.Errorf("event at index %d: unexpected second session.start event", i)
-			}
-			graph.session.ID = event.SessionID
-			graph.session.Timestamp = event.Timestamp
-			graph.session.SpawnedFrom = copySpawnReference(event.SpawnedFrom)
-			graph.started = true
-			eventNames.SessionStart = event.Event
-
-		case EventKindNodeAppended, EventKindHistoryRewritten:
-			if event.Node == nil {
-				return nil, fmt.Errorf("event at index %d: missing node", i)
-			}
-			node := copyNode(*event.Node)
-			if node.ID == "" {
-				return nil, fmt.Errorf("event at index %d: node id is required", i)
-			}
-			if node.SessionID == "" || node.SessionID != graph.session.ID {
-				return nil, fmt.Errorf("event at index %d: node %s has session id %q, expected %q", i, node.ID, node.SessionID, graph.session.ID)
-			}
-			for _, parentID := range node.ParentIDs {
-				if _, exists := graph.nodes[parentID]; !exists {
-					return nil, fmt.Errorf("event at index %d: %w: parent %s missing for node %s", i, ErrNodeNotFound, parentID, node.ID)
-				}
-				graph.children[parentID] = append(graph.children[parentID], node.ID)
-			}
-			for _, sourceID := range node.SynthesizedFrom {
-				if _, exists := graph.nodes[sourceID]; !exists {
-					return nil, fmt.Errorf("event at index %d: %w: synthesized source %s missing for node %s", i, ErrNodeNotFound, sourceID, node.ID)
-				}
-			}
-			graph.nodes[node.ID] = node
-			graph.headID = node.ID
-			if kind == EventKindNodeAppended {
-				eventNames.NodeAppended = event.Event
-			} else {
-				eventNames.HistoryRewritten = event.Event
-			}
-
-		case EventKindSessionEnded:
-			graph.closed = true
-			graph.terminalNodeID = event.TerminalNodeID
-			graph.endReason = event.Reason
-			eventNames.SessionEnded = event.Event
+		err := applyEventToGraph(graph, &eventNames, i, event, kind)
+		if err != nil {
+			return nil, err
 		}
 
 		graph.events = append(graph.events, copyEvent(event))
 	}
 
 	if !graph.started {
-		return nil, errors.New("event log missing session.start event")
+		return nil, errMissingSessionStart
 	}
 
 	graph.eventNames = eventNames
 
 	return graph, nil
+}
+
+// applyEventToGraph applies a single classified event to the graph being restored.
+func applyEventToGraph(
+	graph *Graph,
+	eventNames *EventNames,
+	i int,
+	event Event,
+	kind EventKind,
+) error {
+	switch kind {
+	case EventKindSessionStart:
+		return applySessionStartEvent(graph, eventNames, i, event)
+	case EventKindNodeAppended, EventKindHistoryRewritten:
+		return applyNodeEvent(graph, eventNames, i, event, kind)
+	case EventKindSessionEnded:
+		graph.closed = true
+		graph.terminalNodeID = event.TerminalNodeID
+		graph.endReason = event.Reason
+		eventNames.SessionEnded = event.Event
+	default:
+		// Unknown event kind; ignore.
+	}
+
+	return nil
+}
+
+// applySessionStartEvent handles a session.start event during restore.
+func applySessionStartEvent(graph *Graph, eventNames *EventNames, i int, event Event) error {
+	if graph.started {
+		return fmt.Errorf("event at index %d: %w", i, errUnexpectedSessionStart)
+	}
+
+	graph.session.ID = event.SessionID
+
+	graph.session.Timestamp = event.Timestamp
+	graph.session.SpawnedFrom = copySpawnReference(event.SpawnedFrom)
+	graph.started = true
+
+	eventNames.SessionStart = event.Event
+
+	return nil
+}
+
+// applyNodeEvent handles a node.appended or history.rewritten event during restore.
+func applyNodeEvent(
+	graph *Graph,
+	eventNames *EventNames,
+	i int,
+	event Event,
+	kind EventKind,
+) error {
+	if event.Node == nil {
+		return fmt.Errorf("event at index %d: %w", i, errMissingNode)
+	}
+
+	node := copyNode(*event.Node)
+
+	if node.ID == "" {
+		return fmt.Errorf("event at index %d: %w", i, errNodeIDRequired)
+	}
+
+	if node.SessionID == "" || node.SessionID != graph.session.ID {
+		return fmt.Errorf(
+			"event at index %d: %w: node %s has session id %q, expected %q",
+			i,
+			errNodeSessionIDMismatch,
+			node.ID,
+			node.SessionID,
+			graph.session.ID,
+		)
+	}
+
+	err := linkNodeParents(graph, i, node)
+	if err != nil {
+		return err
+	}
+
+	err = checkSynthesizedSources(graph, i, node)
+	if err != nil {
+		return err
+	}
+
+	graph.nodes[node.ID] = node
+
+	graph.headID = node.ID
+
+	if kind == EventKindNodeAppended {
+		eventNames.NodeAppended = event.Event
+	} else {
+		eventNames.HistoryRewritten = event.Event
+	}
+
+	return nil
+}
+
+// linkNodeParents wires parent→child edges for a node being restored.
+func linkNodeParents(graph *Graph, i int, node Node) error {
+	for _, parentID := range node.ParentIDs {
+		if _, exists := graph.nodes[parentID]; !exists {
+			return fmt.Errorf(
+				"event at index %d: %w: parent %s missing for node %s",
+				i,
+				ErrNodeNotFound,
+				parentID,
+				node.ID,
+			)
+		}
+
+		graph.children[parentID] = append(graph.children[parentID], node.ID)
+	}
+
+	return nil
+}
+
+// checkSynthesizedSources verifies all synthesized-from references exist.
+func checkSynthesizedSources(graph *Graph, i int, node Node) error {
+	for _, sourceID := range node.SynthesizedFrom {
+		if _, exists := graph.nodes[sourceID]; !exists {
+			return fmt.Errorf(
+				"event at index %d: %w: synthesized source %s missing for node %s",
+				i,
+				ErrNodeNotFound,
+				sourceID,
+				node.ID,
+			)
+		}
+	}
+
+	return nil
 }

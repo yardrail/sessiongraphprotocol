@@ -24,8 +24,8 @@ type chatResponse struct {
 }
 
 type ollamaMessage struct {
-	Role      string          `json:"role"`
-	Content   string          `json:"content,omitempty"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content,omitempty"`
 	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -51,7 +51,12 @@ type ollamaToolDef struct {
 
 var ollamaHTTPClient = &http.Client{Timeout: 5 * time.Minute}
 
-func ollamaChat(ctx context.Context, baseURL, model string, msgs []ollamaMessage, tools []ollamaTool) (*chatResponse, error) {
+func ollamaChat(
+	ctx context.Context,
+	baseURL, model string,
+	msgs []ollamaMessage,
+	tools []ollamaTool,
+) (*chatResponse, error) {
 	body, err := json.Marshal(chatRequest{
 		Model:    model,
 		Messages: msgs,
@@ -62,7 +67,12 @@ func ollamaChat(ctx context.Context, baseURL, model string, msgs []ollamaMessage
 		return nil, fmt.Errorf("marshal chat request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/chat", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		strings.TrimRight(baseURL, "/")+"/api/chat",
+		bytes.NewReader(body),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -76,7 +86,11 @@ func ollamaChat(ctx context.Context, baseURL, model string, msgs []ollamaMessage
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("ollama returned %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+		return nil, fmt.Errorf(
+			"ollama returned %s: %s",
+			resp.Status,
+			strings.TrimSpace(string(raw)),
+		)
 	}
 
 	var chatResp chatResponse
