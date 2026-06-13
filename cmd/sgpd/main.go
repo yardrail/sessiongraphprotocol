@@ -8,14 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c" //nolint:staticcheck // required for ConnectRPC h2c interop
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"github.com/restrukt-ai/sessiongraphprotocol/gen/sgp/v1/sgpv1connect"
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/store/pg"
@@ -24,19 +25,52 @@ import (
 const readHeaderTimeout = 30 * time.Second
 
 func main() {
-	err := run()
+	err := newRootCmd().Execute()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sgpd: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	cfg, err := loadConfig()
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "sgpd",
+		Short:        "Session Graph Protocol daemon",
+		RunE:         runServe,
+		SilenceUsage: true,
+	}
+
+	f := cmd.Flags()
+	f.String("database-url", "", "PostgreSQL connection URL")
+	f.String("harness-addr", ":9090", "Harness server listen address")
+	f.String("harness-token", "", "Bearer token for harness auth")
+	f.String("management-addr", ":9091", "Management server listen address")
+	f.String("management-token", "", "Bearer token for management auth")
+	f.String("tls-cert", "", "TLS certificate file")
+	f.String("tls-key", "", "TLS key file")
+
+	return cmd
+}
+
+func runServe(cmd *cobra.Command, _ []string) error {
+	v := viper.New()
+	v.SetEnvPrefix("SGPD")
+	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	v.AutomaticEnv()
+
+	err := v.BindPFlags(cmd.Flags())
+	if err != nil {
+		return fmt.Errorf("bind flags: %w", err)
+	}
+
+	cfg, err := loadConfig(v)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 
+	return run(cfg)
+}
+
+func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -103,9 +137,14 @@ func buildHarnessServer(cfg config, store *pg.Store) *http.Server {
 		sgpv1connect.NewSGPHarnessServiceHandler(&harnessHandler{store: store}, harnessOpts...),
 	)
 
+	var p http.Protocols
+	p.SetHTTP1(true)
+	p.SetUnencryptedHTTP2(true)
+
 	return &http.Server{
 		Addr:              cfg.HarnessAddr,
-		Handler:           h2c.NewHandler(hMux, &http2.Server{}), //nolint:staticcheck
+		Handler:           hMux,
+		Protocols:         &p,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 }

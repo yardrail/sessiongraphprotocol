@@ -1,4 +1,4 @@
-package jsonstore //nolint:revive // package name differs from directory intentionally
+package jsonstore
 
 import (
 	"context"

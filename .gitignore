@@ -1,4 +1,5 @@
 # Compiled binaries
+/sgpd
 examples/sgp-harness-bash/sgp-harness-bash
 examples/sgp-harness-bash/sgp-harness-math
 examples/sgp-harness-math/sgp-harness-math

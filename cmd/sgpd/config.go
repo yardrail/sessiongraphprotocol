@@ -2,13 +2,14 @@ package main
 
 import (
 	"errors"
-	"os"
+
+	"github.com/spf13/viper"
 )
 
 var (
-	errDatabaseURLRequired     = errors.New("SGPD_DATABASE_URL is required")
-	errHarnessTokenRequired    = errors.New("SGPD_HARNESS_TOKEN is required")
-	errManagementTokenRequired = errors.New("SGPD_MANAGEMENT_TOKEN is required")
+	errDatabaseURLRequired     = errors.New("--database-url is required")
+	errHarnessTokenRequired    = errors.New("--harness-token is required")
+	errManagementTokenRequired = errors.New("--management-token is required")
 	errInvalidBearerToken      = errors.New("invalid bearer token")
 	errSessionIDRequired       = errors.New("session_id is required")
 	errEventRequired           = errors.New("event is required")
@@ -25,15 +26,15 @@ type config struct {
 	TLSKey          string
 }
 
-func loadConfig() (config, error) {
+func loadConfig(v *viper.Viper) (config, error) {
 	cfg := config{
-		DatabaseURL:     os.Getenv("SGPD_DATABASE_URL"),
-		HarnessAddr:     envOr("SGPD_HARNESS_ADDR", ":9090"),
-		HarnessToken:    os.Getenv("SGPD_HARNESS_TOKEN"),
-		ManagementAddr:  envOr("SGPD_MANAGEMENT_ADDR", ":9091"),
-		ManagementToken: os.Getenv("SGPD_MANAGEMENT_TOKEN"),
-		TLSCert:         os.Getenv("SGPD_TLS_CERT"),
-		TLSKey:          os.Getenv("SGPD_TLS_KEY"),
+		DatabaseURL:     v.GetString("database-url"),
+		HarnessAddr:     v.GetString("harness-addr"),
+		HarnessToken:    v.GetString("harness-token"),
+		ManagementAddr:  v.GetString("management-addr"),
+		ManagementToken: v.GetString("management-token"),
+		TLSCert:         v.GetString("tls-cert"),
+		TLSKey:          v.GetString("tls-key"),
 	}
 
 	var errs []error
@@ -49,14 +50,7 @@ func loadConfig() (config, error) {
 	if cfg.ManagementToken == "" {
 		errs = append(errs, errManagementTokenRequired)
 	}
+
 	// TLS is optional: omit cert/key for plain HTTP (dev only).
 	return cfg, errors.Join(errs...)
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-
-	return fallback
 }
