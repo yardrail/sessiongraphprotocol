@@ -208,7 +208,7 @@ func (s *Store) ListSessions(
 		limit = 50
 	}
 
-	rawRows, err := s.fetchFirstSessionEvents(ctx, limit+1, pageToken)
+	rawRows, err := s.fetchFirstSessionEvents(ctx, int32(limit+1), pageToken)
 	if err != nil {
 		return nil, "", err
 	}
@@ -323,11 +323,11 @@ func (s *Store) applyNodes(ctx context.Context, q *sqlcdb.Queries, event sgp.Eve
 // fetchFirstSessionEvents retrieves the first event JSON per session for pagination.
 func (s *Store) fetchFirstSessionEvents(
 	ctx context.Context,
-	lim int,
+	lim int32,
 	pageToken string,
 ) ([]json.RawMessage, error) {
 	if pageToken == "" {
-		rows, err := s.queries.ListSessionsFirst(ctx, int32(lim)) //nolint:gosec
+		rows, err := s.queries.ListSessionsFirst(ctx, lim)
 		if err != nil {
 			return nil, fmt.Errorf("list sessions query: %w", err)
 		}
@@ -342,7 +342,7 @@ func (s *Store) fetchFirstSessionEvents(
 
 	rows, err := s.queries.ListSessionsAfter(ctx, sqlcdb.ListSessionsAfterParams{
 		PageToken: pageToken,
-		Lim:       int32(lim), //nolint:gosec
+		Lim:       lim,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list sessions query: %w", err)

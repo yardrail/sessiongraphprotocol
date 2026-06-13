@@ -71,7 +71,7 @@ func NewNotifyBroker(
 // Subscribe registers a subscriber for sessionID and returns a channel that
 // receives Observations, plus a cancel func to unsubscribe.
 func (b *NotifyBroker) Subscribe(
-	_ context.Context,
+	ctx context.Context,
 	sessionID string,
 ) (<-chan Observation, func()) {
 	const subscriberBufSize = 64
@@ -92,7 +92,11 @@ func (b *NotifyBroker) Subscribe(
 	if needListen {
 		channel := pgx.Identifier{"sgp:" + sessionID}.Sanitize()
 		// LISTEN channel names cannot be parameterised; sanitize guards against injection.
-		b.conn.Exec(context.Background(), "LISTEN "+channel) //nolint:errcheck,contextcheck
+		// Best-effort: if LISTEN fails the session just won't receive live notifications.
+		_, listenErr := b.conn.Exec(ctx, "LISTEN "+channel)
+		if listenErr != nil {
+			_ = listenErr // intentionally ignored; subscriber will simply not get live updates
+		}
 	}
 
 	cancel := func() {
@@ -199,7 +203,12 @@ func (b *NotifyBroker) fetchObservation(
 		obs.Status = SessionStatusOpen
 	}
 
-	count, _ := b.queries.CountNodesBySession(ctx, sessionID) //nolint:errcheck
+	// NodeCount is best-effort metadata; a zero count on error is acceptable.
+	count, countErr := b.queries.CountNodesBySession(ctx, sessionID)
+	if countErr != nil {
+		count = 0
+	}
+
 	obs.NodeCount = count
 
 	return obs, nil

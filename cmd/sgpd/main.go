@@ -108,8 +108,16 @@ func run(cfg config) error {
 
 	<-ctx.Done()
 	slog.Info("shutting down")
-	hServer.Shutdown(context.Background()) //nolint:errcheck
-	mServer.Shutdown(context.Background()) //nolint:errcheck
+
+	err = hServer.Shutdown(context.Background())
+	if err != nil {
+		slog.Error("harness server shutdown", "err", err)
+	}
+
+	err = mServer.Shutdown(context.Background())
+	if err != nil {
+		slog.Error("management server shutdown", "err", err)
+	}
 
 	return nil
 }
