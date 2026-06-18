@@ -13,9 +13,13 @@ import (
 	"syscall"
 
 	cayleygraph "github.com/cayleygraph/cayley/graph"
-	_ "github.com/cayleygraph/cayley/graph/bolt"
+	_ "github.com/cayleygraph/cayley/graph/kv/bolt"
+	cayley_kv "github.com/cayleygraph/cayley/graph/kv"
 	_ "github.com/cayleygraph/cayley/graph/memstore"
+	hidalgo_flat "github.com/hidal-go/hidalgo/kv/flat"
+	hidalgo_leveldb "github.com/hidal-go/hidalgo/kv/flat/leveldb"
 	cayleystore "github.com/restrukt-ai/sessiongraphprotocol/pkg/store/cayley"
+	"github.com/restrukt-ai/sessiongraphprotocol/pkg/sgp"
 )
 
 type stringSlice []string
@@ -42,12 +46,61 @@ func buildPeersDesc(peers []string) string {
 
 const defaultSystemPrompt = "You are a helpful assistant with access to file reading. Use the read_file tool to read files when needed."
 
+// openLocalStore opens (or creates) a Cayley-backed sgp.Store for the given backend type.
+// Supported types: mem, bolt, leveldb.
+func openLocalStore(storeType, dir string) (sgp.Store, string, error) {
+	switch storeType {
+	case "mem":
+		qs, err := cayleygraph.NewQuadStore("memstore", "", nil)
+		if err != nil {
+			return nil, "", err
+		}
+		return cayleystore.New(qs), "in-memory (memstore)", nil
+
+	case "bolt":
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, "", err
+		}
+		path := filepath.Join(dir, "cayley.bolt")
+		qs, err := cayleygraph.NewQuadStore("bolt", path, nil)
+		if err != nil {
+			return nil, "", err
+		}
+		absPath, _ := filepath.Abs(path)
+		return cayleystore.New(qs), absPath + " (bolt)", nil
+
+	case "leveldb":
+		path := filepath.Join(dir, "cayley.ldb")
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return nil, "", err
+		}
+		flatDB, err := hidalgo_leveldb.OpenPath(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("leveldb open: %w", err)
+		}
+		kvDB := hidalgo_flat.Upgrade(flatDB)
+		if initErr := cayley_kv.Init(kvDB, nil); initErr != nil && !errors.Is(initErr, cayleygraph.ErrDatabaseExists) {
+			return nil, "", fmt.Errorf("leveldb init: %w", initErr)
+		}
+		qs, err := cayley_kv.New(kvDB, nil)
+		if err != nil {
+			return nil, "", fmt.Errorf("leveldb new: %w", err)
+		}
+		absPath, _ := filepath.Abs(path)
+		return cayleystore.New(qs), absPath + " (leveldb)", nil
+
+	default:
+		return nil, "", fmt.Errorf("unknown store %q: use mem, bolt, or leveldb", storeType)
+	}
+}
+
 func main() {
 	model := flag.String("model", "llama3.2", "Ollama model name")
-	sessionDir := flag.String("session-dir", ".sgp-sessions", "Directory to store session graphs")
+	sessionDir := flag.String("session-dir", ".sgp-sessions", "Directory for session data (ignored for --store=mem)")
 	sessionID := flag.String("session-id", "", "Resume an existing session (empty = new)")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama base URL")
 	system := flag.String("system", defaultSystemPrompt, "System prompt")
+	storeType := flag.String("store", "bolt", "Backend: mem, bolt, leveldb")
 	var peers stringSlice
 	flag.Var(&peers, "peer", "Peer harness as path=description (repeatable)")
 	flag.Parse()
@@ -55,18 +108,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	storePath := filepath.Join(*sessionDir, "cayley.db")
-	if err := os.MkdirAll(*sessionDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "error creating session dir: %v\n", err)
-		os.Exit(1)
-	}
-
-	qs, err := cayleygraph.NewQuadStore("bolt", storePath, nil)
+	store, storePath, err := openLocalStore(*storeType, *sessionDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error opening store: %v\n", err)
 		os.Exit(1)
 	}
-	store := cayleystore.New(qs)
 
 	peersDesc := buildPeersDesc(peers)
 	systemPrompt := *system
@@ -89,8 +135,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	absDir, _ := filepath.Abs(*sessionDir)
-	fmt.Printf("session:  %s\nstore:    %s/cayley.db\n\n", sid, absDir)
+	fmt.Printf("session:  %s\nstore:    %s\n\n", sid, storePath)
 
 	selfPath, _ := os.Executable()
 

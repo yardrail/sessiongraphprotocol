@@ -13,8 +13,11 @@ import (
 	"syscall"
 
 	cayleygraph "github.com/cayleygraph/cayley/graph"
-	_ "github.com/cayleygraph/cayley/graph/bolt"
+	_ "github.com/cayleygraph/cayley/graph/kv/bolt"
+	cayley_kv "github.com/cayleygraph/cayley/graph/kv"
 	_ "github.com/cayleygraph/cayley/graph/memstore"
+	hidalgo_flat "github.com/hidal-go/hidalgo/kv/flat"
+	hidalgo_leveldb "github.com/hidal-go/hidalgo/kv/flat/leveldb"
 	cayleystore "github.com/restrukt-ai/sessiongraphprotocol/pkg/store/cayley"
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/sgp"
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/store/sgpd"
@@ -44,6 +47,54 @@ func buildPeersDesc(peers []string) string {
 
 const defaultSystemPrompt = "You are a helpful math assistant. Use the calculate tool to evaluate mathematical expressions."
 
+// openLocalStore opens (or creates) a Cayley-backed sgp.Store for the given backend type.
+// Supported types: mem, bolt, leveldb.
+func openLocalStore(storeType, dir string) (sgp.Store, string, error) {
+	switch storeType {
+	case "mem":
+		qs, err := cayleygraph.NewQuadStore("memstore", "", nil)
+		if err != nil {
+			return nil, "", err
+		}
+		return cayleystore.New(qs), "in-memory (memstore)", nil
+
+	case "bolt":
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, "", err
+		}
+		path := filepath.Join(dir, "cayley.bolt")
+		qs, err := cayleygraph.NewQuadStore("bolt", path, nil)
+		if err != nil {
+			return nil, "", err
+		}
+		absPath, _ := filepath.Abs(path)
+		return cayleystore.New(qs), absPath + " (bolt)", nil
+
+	case "leveldb":
+		path := filepath.Join(dir, "cayley.ldb")
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return nil, "", err
+		}
+		flatDB, err := hidalgo_leveldb.OpenPath(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("leveldb open: %w", err)
+		}
+		kvDB := hidalgo_flat.Upgrade(flatDB)
+		if initErr := cayley_kv.Init(kvDB, nil); initErr != nil && !errors.Is(initErr, cayleygraph.ErrDatabaseExists) {
+			return nil, "", fmt.Errorf("leveldb init: %w", initErr)
+		}
+		qs, err := cayley_kv.New(kvDB, nil)
+		if err != nil {
+			return nil, "", fmt.Errorf("leveldb new: %w", err)
+		}
+		absPath, _ := filepath.Abs(path)
+		return cayleystore.New(qs), absPath + " (leveldb)", nil
+
+	default:
+		return nil, "", fmt.Errorf("unknown store %q: use mem, bolt, or leveldb", storeType)
+	}
+}
+
 func main() {
 	// OAC mode: ORCHESTRATOR_ADDR is set by the orchestrator at container start.
 	if oacCfg := loadOACConfig(); oacCfg != nil {
@@ -62,15 +113,16 @@ func main() {
 	sessionDir := flag.String(
 		"session-dir",
 		".sgp-sessions",
-		"Directory to store session graphs (file store)",
+		"Directory for session data (ignored for --store=mem)",
 	)
 	sessionID := flag.String("session-id", "", "Resume an existing session (empty = new)")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama base URL")
 	system := flag.String("system", defaultSystemPrompt, "System prompt")
+	storeType := flag.String("store", "bolt", "Local backend: mem, bolt, leveldb (ignored when --sgpd-url is set)")
 	sgpdURL := flag.String(
 		"sgpd-url",
 		"",
-		"sgpd server URL (e.g. http://localhost:9090); uses sgpd instead of local file store",
+		"sgpd server URL (e.g. http://localhost:9090); uses sgpd instead of local store",
 	)
 	sgpdToken := flag.String("sgpd-token", "", "Bearer token for sgpd harness service")
 	var peers stringSlice
@@ -81,20 +133,18 @@ func main() {
 	defer stop()
 
 	var store sgp.Store
+	var storePath string
+
 	if *sgpdURL != "" {
 		store = sgpd.NewClient(*sgpdURL, *sgpdToken)
+		storePath = *sgpdURL + " (sgpd)"
 	} else {
-		storePath := filepath.Join(*sessionDir, "cayley.db")
-		if err := os.MkdirAll(*sessionDir, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "error creating session dir: %v\n", err)
-			os.Exit(1)
-		}
-		qs, err := cayleygraph.NewQuadStore("bolt", storePath, nil)
+		var err error
+		store, storePath, err = openLocalStore(*storeType, *sessionDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error opening store: %v\n", err)
 			os.Exit(1)
 		}
-		store = cayleystore.New(qs)
 	}
 
 	peersDesc := buildPeersDesc(peers)
@@ -119,12 +169,7 @@ func main() {
 	h.sgpdURL = *sgpdURL
 	h.sgpdToken = *sgpdToken
 
-	if *sgpdURL != "" {
-		fmt.Printf("session: %s (sgpd: %s)\n\n", sid, *sgpdURL)
-	} else {
-		absDir, _ := filepath.Abs(*sessionDir)
-		fmt.Printf("session:  %s\nstore:    %s/cayley.db\n\n", sid, absDir)
-	}
+	fmt.Printf("session:  %s\nstore:    %s\n\n", sid, storePath)
 
 	selfPath, _ := os.Executable()
 
