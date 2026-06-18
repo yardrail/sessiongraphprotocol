@@ -13,12 +13,16 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5/pgxpool"
+	cayleygraph "github.com/cayleygraph/cayley/graph"
+	_ "github.com/cayleygraph/cayley/graph/kv/bolt"
+	_ "github.com/cayleygraph/cayley/graph/kv/leveldb"
+	_ "github.com/cayleygraph/cayley/graph/memstore"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
 	"github.com/restrukt-ai/sessiongraphprotocol/gen/sgp/v1/sgpv1connect"
-	"github.com/restrukt-ai/sessiongraphprotocol/pkg/store/pg"
+	"github.com/restrukt-ai/sessiongraphprotocol/pkg/sgp"
+	cayleystore "github.com/restrukt-ai/sessiongraphprotocol/pkg/store/cayley"
 )
 
 const readHeaderTimeout = 30 * time.Second
@@ -39,7 +43,8 @@ func newRootCmd() *cobra.Command {
 	}
 
 	f := cmd.Flags()
-	f.String("database-url", "", "PostgreSQL connection URL")
+	f.String("store-backend", "bolt", "Quad store backend: bolt, leveldb, postgres, memstore")
+	f.String("store-path", "./sgpd-data", "Filesystem path for embedded backends")
 	f.String("harness-addr", ":9090", "Harness server listen address")
 	f.String("harness-token", "", "Bearer token for harness auth")
 	f.String("management-addr", ":9091", "Management server listen address")
@@ -73,32 +78,13 @@ func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	qs, err := openQuadStore(cfg)
 	if err != nil {
-		return fmt.Errorf("create pool: %w", err)
+		return fmt.Errorf("open quad store: %w", err)
 	}
-	defer pool.Close()
+	defer qs.Close()
 
-	err = pg.Migrate(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return fmt.Errorf("migrate: %w", err)
-	}
-
-	// Notify broker + store.
-	broker, err := pg.NewNotifyBroker(ctx, cfg.DatabaseURL, pool)
-	if err != nil {
-		return fmt.Errorf("notify broker: %w", err)
-	}
-	defer broker.Close(context.Background())
-
-	go func() {
-		err := broker.Run(ctx)
-		if err != nil {
-			slog.Error("notify broker exited", "err", err)
-		}
-	}()
-
-	store := pg.NewStore(pool, broker)
+	store := cayleystore.New(qs)
 
 	hServer := buildHarnessServer(cfg, store)
 	mServer := buildManagementServer(cfg, store)
@@ -122,7 +108,11 @@ func run(cfg config) error {
 	return nil
 }
 
-func buildHarnessServer(cfg config, store *pg.Store) *http.Server {
+func openQuadStore(cfg config) (cayleygraph.QuadStore, error) {
+	return cayleygraph.NewQuadStore(cfg.StoreBackend, cfg.StorePath, nil)
+}
+
+func buildHarnessServer(cfg config, store sgp.Store) *http.Server {
 	harnessOpts := []connect.HandlerOption{
 		connect.WithInterceptors(newBearerInterceptor(cfg.HarnessToken)),
 	}
@@ -143,7 +133,7 @@ func buildHarnessServer(cfg config, store *pg.Store) *http.Server {
 	}
 }
 
-func buildManagementServer(cfg config, store *pg.Store) *http.Server {
+func buildManagementServer(cfg config, store sgp.Store) *http.Server {
 	mgmtOpts := []connect.HandlerOption{
 		connect.WithInterceptors(newBearerInterceptor(cfg.ManagementToken)),
 	}

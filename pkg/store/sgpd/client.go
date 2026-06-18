@@ -4,8 +4,10 @@ package sgpd
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
+	"time"
 
 	"connectrpc.com/connect"
 	"golang.org/x/net/http2"
@@ -15,6 +17,9 @@ import (
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/sgp"
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/store/sgpd/convert"
 )
+
+// ErrUnsupported is returned by methods that require the management client which is not wired.
+var ErrUnsupported = errors.New("operation not supported by this store")
 
 // Client implements sgp.Store backed by the SGPHarnessService RPC.
 // It connects over h2c (HTTP/2 cleartext) with bearer token auth.
@@ -45,8 +50,61 @@ func NewClient(baseURL, bearerToken string) *Client {
 	}
 }
 
-// AppendEvent sends a single event to the sgpd server.
-func (c *Client) AppendEvent(ctx context.Context, sessionID sgp.ID, event sgp.Event) error {
+// CreateSession synthesizes a session.start event and calls AppendEvent RPC.
+func (c *Client) CreateSession(ctx context.Context, sess sgp.Session) error {
+	event := sgp.Event{
+		Kind:        sgp.EventKindSessionStart,
+		Event:       sgp.DefaultEventNames().SessionStart,
+		SessionID:   sess.ID,
+		Timestamp:   sess.Timestamp,
+		SpawnedFrom: sess.SpawnedFrom,
+	}
+	_, err := c.rpc.AppendEvent(ctx, connect.NewRequest(&sgpv1.AppendEventRequest{
+		SessionId: string(sess.ID),
+		Event:     convert.EventToProto(event),
+	}))
+
+	return err
+}
+
+// WriteNode synthesizes a node.appended or history.rewritten event and calls AppendEvent RPC.
+func (c *Client) WriteNode(ctx context.Context, node sgp.Node) error {
+	kind := sgp.EventKindNodeAppended
+	eventName := sgp.DefaultEventNames().NodeAppended
+
+	if len(node.SynthesizedFrom) > 0 {
+		kind = sgp.EventKindHistoryRewritten
+		eventName = sgp.DefaultEventNames().HistoryRewritten
+	}
+
+	n := node
+
+	event := sgp.Event{
+		Kind:      kind,
+		Event:     eventName,
+		SessionID: node.SessionID,
+		Timestamp: node.Timestamp,
+		Node:      &n,
+	}
+
+	_, err := c.rpc.AppendEvent(ctx, connect.NewRequest(&sgpv1.AppendEventRequest{
+		SessionId: string(node.SessionID),
+		Event:     convert.EventToProto(event),
+	}))
+
+	return err
+}
+
+// EndSession synthesizes a session.ended event and calls AppendEvent RPC.
+func (c *Client) EndSession(ctx context.Context, sessionID sgp.ID, reason sgp.EndReason, terminalNodeID sgp.ID) error {
+	event := sgp.Event{
+		Kind:           sgp.EventKindSessionEnded,
+		Event:          sgp.DefaultEventNames().SessionEnded,
+		SessionID:      sessionID,
+		Timestamp:      time.Now().UTC(),
+		Reason:         reason,
+		TerminalNodeID: terminalNodeID,
+	}
 	_, err := c.rpc.AppendEvent(ctx, connect.NewRequest(&sgpv1.AppendEventRequest{
 		SessionId: string(sessionID),
 		Event:     convert.EventToProto(event),
@@ -55,8 +113,8 @@ func (c *Client) AppendEvent(ctx context.Context, sessionID sgp.ID, event sgp.Ev
 	return err
 }
 
-// LoadEvents fetches the full event log from the sgpd server and restores Kind.
-func (c *Client) LoadEvents(ctx context.Context, sessionID sgp.ID) ([]sgp.Event, error) {
+// LoadGraph calls LoadEvents RPC and restores the graph via RestoreFromEvents.
+func (c *Client) LoadGraph(ctx context.Context, sessionID sgp.ID) (*sgp.Graph, error) {
 	resp, err := c.rpc.LoadEvents(ctx, connect.NewRequest(&sgpv1.LoadEventsRequest{
 		SessionId: string(sessionID),
 	}))
@@ -69,7 +127,27 @@ func (c *Client) LoadEvents(ctx context.Context, sessionID sgp.ID) ([]sgp.Event,
 		events[i] = convert.EventFromProto(e)
 	}
 
-	return events, nil
+	return sgp.RestoreFromEvents(events)
+}
+
+// GetNode returns ErrUnsupported (management client not wired).
+func (c *Client) GetNode(_ context.Context, _ sgp.ID) (sgp.Node, error) {
+	return sgp.Node{}, ErrUnsupported
+}
+
+// GetLineage returns ErrUnsupported (management client not wired).
+func (c *Client) GetLineage(_ context.Context, _ sgp.ID) ([]sgp.Node, error) {
+	return nil, ErrUnsupported
+}
+
+// GetSession returns ErrUnsupported (management client not wired).
+func (c *Client) GetSession(_ context.Context, _ sgp.ID) (sgp.Session, sgp.SessionStatus, error) {
+	return sgp.Session{}, 0, ErrUnsupported
+}
+
+// ListSessions returns ErrUnsupported (management client not wired).
+func (c *Client) ListSessions(_ context.Context, _ string, _ int) ([]sgp.Session, string, error) {
+	return nil, "", ErrUnsupported
 }
 
 // bearerTransport injects an Authorization header on every request.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	sgp "github.com/restrukt-ai/sessiongraphprotocol/pkg/sgp"
 )
@@ -41,36 +42,32 @@ func newHarness(
 	if sessionID == "" {
 		graph = sgp.NewGraph()
 
-		startEvt, startErr := graph.Start()
+		_, startErr := graph.Start()
 		if startErr != nil {
 			return nil, "", fmt.Errorf("start graph: %w", startErr)
 		}
 
-		if err = store.AppendEvent(context.Background(), graph.Session().ID, startEvt); err != nil {
-			return nil, "", fmt.Errorf("persist start event: %w", err)
+		sess := graph.Session()
+		sess.Timestamp = time.Now().UTC()
+
+		if err = store.CreateSession(context.Background(), sess); err != nil {
+			return nil, "", fmt.Errorf("persist session: %w", err)
 		}
 
-		root, sysEvt, appendErr := graph.Append(
-			sgp.Message{System: &sgp.SystemMessage{Text: systemPrompt}},
-		)
+		root, _, appendErr := graph.Append(sgp.Message{System: &sgp.SystemMessage{Text: systemPrompt}})
 		if appendErr != nil {
 			return nil, "", fmt.Errorf("append system message: %w", appendErr)
 		}
 
-		if err = store.AppendEvent(context.Background(), graph.Session().ID, sysEvt); err != nil {
-			return nil, "", fmt.Errorf("persist system event: %w", err)
+		if err = store.WriteNode(context.Background(), root); err != nil {
+			return nil, "", fmt.Errorf("persist system node: %w", err)
 		}
 
 		headID = root.ID
 	} else {
-		evts, loadErr := store.LoadEvents(context.Background(), sgp.ID(sessionID))
-		if loadErr != nil {
-			return nil, "", fmt.Errorf("load session: %w", loadErr)
-		}
-
-		graph, err = sgp.RestoreFromEvents(evts)
+		graph, err = store.LoadGraph(context.Background(), sgp.ID(sessionID))
 		if err != nil {
-			return nil, "", fmt.Errorf("restore graph: %w", err)
+			return nil, "", fmt.Errorf("load session: %w", err)
 		}
 
 		if head, ok := graph.Head(); ok {
@@ -91,7 +88,7 @@ func newHarness(
 }
 
 func (h *harness) handleTurn(ctx context.Context, userInput string) (string, error) {
-	userNode, userEvt, err := h.graph.Append(
+	userNode, _, err := h.graph.Append(
 		sgp.Message{
 			User: &sgp.UserMessage{
 				Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: userInput}}},
@@ -105,7 +102,7 @@ func (h *harness) handleTurn(ctx context.Context, userInput string) (string, err
 
 	h.headID = userNode.ID
 
-	if err = h.persistEvent(ctx, userEvt); err != nil {
+	if err = h.persistNode(ctx, userNode); err != nil {
 		return "", err
 	}
 
@@ -133,7 +130,7 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 
 		if len(resp.Message.ToolCalls) == 0 {
 			text := resp.Message.Content
-			assistNode, assistEvt, appendErr := h.graph.Append(
+			assistNode, _, appendErr := h.graph.Append(
 				sgp.Message{Assistant: &sgp.AssistantMessage{
 					Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: text}}},
 				}},
@@ -145,7 +142,7 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 
 			h.headID = assistNode.ID
 
-			if err = h.persistEvent(ctx, assistEvt); err != nil {
+			if err = h.persistNode(ctx, assistNode); err != nil {
 				return "", err
 			}
 
@@ -154,6 +151,7 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 
 		h.callSeq++
 		toolCalls := make([]sgp.ToolCall, len(resp.Message.ToolCalls))
+
 		for i, tc := range resp.Message.ToolCalls {
 			argsBytes, _ := json.Marshal(tc.Function.Arguments)
 			toolCalls[i] = sgp.ToolCall{
@@ -163,7 +161,7 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 			}
 		}
 
-		callNode, callEvt, err := h.graph.Append(
+		callNode, _, err := h.graph.Append(
 			sgp.Message{Assistant: &sgp.AssistantMessage{ToolCalls: toolCalls}},
 			h.headID,
 		)
@@ -175,6 +173,7 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 
 		// Intercept teleport before executing any tools.
 		teleportIdx := -1
+
 		for i, tc := range resp.Message.ToolCalls {
 			if tc.Function.Name == "teleport" {
 				teleportIdx = i
@@ -183,7 +182,7 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 		}
 
 		if teleportIdx >= 0 {
-			if err = h.persistEvent(ctx, callEvt); err != nil {
+			if err = h.persistNode(ctx, callNode); err != nil {
 				return "", err
 			}
 
@@ -194,7 +193,7 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 			spawnErr := h.spawnHandoff(args)
 
 			if spawnErr != nil {
-				resultNode, resultEvt, appendErr := h.graph.Append(
+				resultNode, _, appendErr := h.graph.Append(
 					sgp.Message{Tool: &sgp.ToolMessage{
 						ToolCallID: fmt.Sprintf("tc-%d-%d", h.callSeq, teleportIdx),
 						Name:       "teleport",
@@ -211,7 +210,7 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 
 				h.headID = resultNode.ID
 
-				if err = h.persistEvent(ctx, resultEvt); err != nil {
+				if err = h.persistNode(ctx, resultNode); err != nil {
 					return "", err
 				}
 
@@ -221,14 +220,14 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 			return "", errTeleported
 		}
 
-		if err = h.persistEvent(ctx, callEvt); err != nil {
+		if err = h.persistNode(ctx, callNode); err != nil {
 			return "", err
 		}
 
 		for i, tc := range resp.Message.ToolCalls {
 			argsBytes, _ := json.Marshal(tc.Function.Arguments)
 			output, success := executeTool(ctx, tc.Function.Name, string(argsBytes))
-			resultNode, resultEvt, appendErr := h.graph.Append(
+			resultNode, _, appendErr := h.graph.Append(
 				sgp.Message{Tool: &sgp.ToolMessage{
 					ToolCallID: fmt.Sprintf("tc-%d-%d", h.callSeq, i),
 					Name:       tc.Function.Name,
@@ -243,7 +242,7 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 
 			h.headID = resultNode.ID
 
-			if err = h.persistEvent(ctx, resultEvt); err != nil {
+			if err = h.persistNode(ctx, resultNode); err != nil {
 				return "", err
 			}
 		}
@@ -263,6 +262,7 @@ func (h *harness) spawnHandoff(args map[string]any) error {
 		"--model", h.model,
 		"--ollama-url", h.ollamaURL,
 	}
+
 	if h.sgpdURL != "" {
 		cmdArgs = append(cmdArgs, "--sgpd-url", h.sgpdURL, "--sgpd-token", h.sgpdToken)
 	} else {
@@ -287,7 +287,6 @@ func (h *harness) handleArrival(ctx context.Context, selfPath string) (string, b
 		return "", false, nil
 	}
 
-	// Head is an AssistantMessage with unanswered ToolCalls — arrival/crash-recovery case.
 	for _, tc := range head.Message.Assistant.ToolCalls {
 		var text string
 		var isError bool
@@ -303,7 +302,7 @@ func (h *harness) handleArrival(ctx context.Context, selfPath string) (string, b
 			isError = !success
 		}
 
-		resultNode, resultEvt, err := h.graph.Append(
+		resultNode, _, err := h.graph.Append(
 			sgp.Message{Tool: &sgp.ToolMessage{
 				ToolCallID: tc.ID,
 				Name:       tc.Name,
@@ -318,7 +317,7 @@ func (h *harness) handleArrival(ctx context.Context, selfPath string) (string, b
 
 		h.headID = resultNode.ID
 
-		if err = h.persistEvent(ctx, resultEvt); err != nil {
+		if err = h.persistNode(ctx, resultNode); err != nil {
 			return "", false, err
 		}
 	}
@@ -331,8 +330,8 @@ func (h *harness) handleArrival(ctx context.Context, selfPath string) (string, b
 	return response, true, nil
 }
 
-func (h *harness) persistEvent(ctx context.Context, event sgp.Event) error {
-	return h.store.AppendEvent(ctx, h.graph.Session().ID, event)
+func (h *harness) persistNode(ctx context.Context, node sgp.Node) error {
+	return h.store.WriteNode(ctx, node)
 }
 
 func (h *harness) close(ctx context.Context) {
@@ -341,7 +340,7 @@ func (h *harness) close(ctx context.Context) {
 		return
 	}
 
-	_ = h.persistEvent(ctx, endEvt)
+	_ = h.store.EndSession(ctx, h.graph.Session().ID, endEvt.Reason, endEvt.TerminalNodeID)
 }
 
 func toOllamaMessages(nodes []sgp.Node) []ollamaMessage {

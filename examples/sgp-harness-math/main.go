@@ -12,8 +12,11 @@ import (
 	"strings"
 	"syscall"
 
+	cayleygraph "github.com/cayleygraph/cayley/graph"
+	_ "github.com/cayleygraph/cayley/graph/bolt"
+	_ "github.com/cayleygraph/cayley/graph/memstore"
+	cayleystore "github.com/restrukt-ai/sessiongraphprotocol/pkg/store/cayley"
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/sgp"
-	jsonstore "github.com/restrukt-ai/sessiongraphprotocol/pkg/store/json"
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/store/sgpd"
 )
 
@@ -81,12 +84,17 @@ func main() {
 	if *sgpdURL != "" {
 		store = sgpd.NewClient(*sgpdURL, *sgpdToken)
 	} else {
-		var err error
-		store, err = jsonstore.NewJSONFileStore(*sessionDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		storePath := filepath.Join(*sessionDir, "cayley.db")
+		if err := os.MkdirAll(*sessionDir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "error creating session dir: %v\n", err)
 			os.Exit(1)
 		}
+		qs, err := cayleygraph.NewQuadStore("bolt", storePath, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error opening store: %v\n", err)
+			os.Exit(1)
+		}
+		store = cayleystore.New(qs)
 	}
 
 	peersDesc := buildPeersDesc(peers)
@@ -115,7 +123,7 @@ func main() {
 		fmt.Printf("session: %s (sgpd: %s)\n\n", sid, *sgpdURL)
 	} else {
 		absDir, _ := filepath.Abs(*sessionDir)
-		fmt.Printf("session:  %s\nsnapshot: %s/%s.jsonl\n\n", sid, absDir, sid)
+		fmt.Printf("session:  %s\nstore:    %s/cayley.db\n\n", sid, absDir)
 	}
 
 	selfPath, _ := os.Executable()

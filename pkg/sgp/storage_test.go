@@ -3,6 +3,7 @@ package sgp
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 // --- ClassifyEvent ---
@@ -548,5 +549,164 @@ func TestRestoreFromEventsMissingParentReturnsError(t *testing.T) {
 	_, err := RestoreFromEvents([]Event{startEvent, nodeEvent})
 	if !errors.Is(err, ErrNodeNotFound) {
 		t.Fatalf("expected ErrNodeNotFound, got %v", err)
+	}
+}
+
+// --- RestoreFromNodes ---
+
+func TestRestoreFromNodesLinear(t *testing.T) {
+	t.Parallel()
+
+	sess := Session{ID: "s1", Timestamp: time.Now().UTC()}
+	n1 := Node{ID: "n1", SessionID: "s1", Timestamp: time.Now().UTC(),
+		Message: Message{System: &SystemMessage{Text: "system prompt"}}}
+	n2 := Node{ID: "n2", SessionID: "s1", Timestamp: time.Now().Add(time.Millisecond).UTC(),
+		ParentIDs: []ID{"n1"},
+		Message:   Message{User: &UserMessage{Parts: []ContentPart{{Text: &TextPart{Text: "hello"}}}}}}
+	n3 := Node{ID: "n3", SessionID: "s1", Timestamp: time.Now().Add(2 * time.Millisecond).UTC(),
+		ParentIDs: []ID{"n2"},
+		Message:   Message{Assistant: &AssistantMessage{Parts: []ContentPart{{Text: &TextPart{Text: "hi"}}}}}}
+
+	g, err := RestoreFromNodes(sess, []Node{n3, n1, n2}, "n3", SessionStatusOpen, "", "")
+	if err != nil {
+		t.Fatalf("RestoreFromNodes: %v", err)
+	}
+
+	assertLinearSessionMessages(t, g)
+}
+
+func TestRestoreFromNodesRewrite(t *testing.T) {
+	t.Parallel()
+
+	graph, mergeNode := buildHistoryRewriteGraph(t)
+	sess := graph.Session()
+	var nodes []Node
+	for _, e := range graph.Events() {
+		if e.Node != nil {
+			nodes = append(nodes, *e.Node)
+		}
+	}
+
+	g, err := RestoreFromNodes(sess, nodes, mergeNode.ID, SessionStatusOpen, "", "")
+	if err != nil {
+		t.Fatalf("RestoreFromNodes: %v", err)
+	}
+
+	lineage, err := g.ResumeNodes(mergeNode.ID)
+	if err != nil {
+		t.Fatalf("ResumeNodes: %v", err)
+	}
+	if got, want := len(lineage), 3; got != want {
+		t.Fatalf("expected canonical lineage length %d, got %d", want, got)
+	}
+	if lineage[2].Message.TextContent() != "merged" {
+		t.Fatalf("unexpected merge node content: %q", lineage[2].Message.TextContent())
+	}
+}
+
+func TestRestoreFromNodesSubagentSpawn(t *testing.T) {
+	t.Parallel()
+
+	spawnRef := SpawnReference{SessionID: "parent-session", NodeID: "parent-node"}
+	sess := Session{
+		ID:          "child-session",
+		Timestamp:   time.Now().UTC(),
+		SpawnedFrom: &spawnRef,
+	}
+	nodes := []Node{{
+		ID: "n1", SessionID: "child-session", Timestamp: time.Now().UTC(),
+		Message: Message{System: &SystemMessage{Text: "sys"}},
+	}}
+
+	g, err := RestoreFromNodes(sess, nodes, "n1", SessionStatusOpen, "", "")
+	if err != nil {
+		t.Fatalf("RestoreFromNodes: %v", err)
+	}
+
+	s := g.Session()
+	if s.SpawnedFrom == nil {
+		t.Fatal("expected spawned_from to be set")
+	}
+	if s.SpawnedFrom.SessionID != "parent-session" {
+		t.Fatalf("expected parent-session, got %q", s.SpawnedFrom.SessionID)
+	}
+}
+
+func TestRestoreFromNodesClosed(t *testing.T) {
+	t.Parallel()
+
+	sess := Session{ID: "s1", Timestamp: time.Now().UTC()}
+	n1 := Node{ID: "n1", SessionID: "s1", Timestamp: time.Now().UTC(),
+		Message: Message{System: &SystemMessage{Text: "sys"}}}
+
+	g, err := RestoreFromNodes(sess, []Node{n1}, "n1", SessionStatusClosed, EndReasonComplete, "n1")
+	if err != nil {
+		t.Fatalf("RestoreFromNodes: %v", err)
+	}
+
+	_, _, appendErr := g.Append(Message{User: &UserMessage{}}, "n1")
+	if !errors.Is(appendErr, ErrSessionClosed) {
+		t.Fatalf("expected ErrSessionClosed, got %v", appendErr)
+	}
+}
+
+func TestRestoreFromNodesFanOut(t *testing.T) {
+	t.Parallel()
+
+	sess := Session{ID: "s1", Timestamp: time.Now().UTC()}
+	root := Node{ID: "root", SessionID: "s1", Timestamp: time.Now().UTC(),
+		Message: Message{System: &SystemMessage{Text: "sys"}}}
+	b1 := Node{ID: "b1", SessionID: "s1", Timestamp: time.Now().Add(time.Millisecond).UTC(),
+		ParentIDs: []ID{"root"},
+		Message:   Message{Assistant: &AssistantMessage{}}}
+	b2 := Node{ID: "b2", SessionID: "s1", Timestamp: time.Now().Add(2 * time.Millisecond).UTC(),
+		ParentIDs: []ID{"root"},
+		Message:   Message{Assistant: &AssistantMessage{}}}
+
+	// Provide in reversed/shuffled order to test topo sort
+	g, err := RestoreFromNodes(sess, []Node{b2, b1, root}, "b2", SessionStatusOpen, "", "")
+	if err != nil {
+		t.Fatalf("RestoreFromNodes fan-out: %v", err)
+	}
+
+	// Both branches should be accessible
+	if _, err := g.Node("b1"); err != nil {
+		t.Fatalf("b1 not in graph: %v", err)
+	}
+	if _, err := g.Node("b2"); err != nil {
+		t.Fatalf("b2 not in graph: %v", err)
+	}
+}
+
+func TestRestoreFromNodesEmpty(t *testing.T) {
+	t.Parallel()
+
+	sess := Session{ID: "s1", Timestamp: time.Now().UTC()}
+	g, err := RestoreFromNodes(sess, nil, "", SessionStatusOpen, "", "")
+	if err != nil {
+		t.Fatalf("RestoreFromNodes with no nodes: %v", err)
+	}
+
+	_, ok := g.Head()
+	if ok {
+		t.Fatal("expected no head for empty graph")
+	}
+}
+
+func TestRestoreFromNodesCycleDetected(t *testing.T) {
+	t.Parallel()
+
+	sess := Session{ID: "s1", Timestamp: time.Now().UTC()}
+	// n1 -> n2 -> n1 (cycle)
+	n1 := Node{ID: "n1", SessionID: "s1", Timestamp: time.Now().UTC(),
+		ParentIDs: []ID{"n2"},
+		Message:   Message{System: &SystemMessage{Text: "sys"}}}
+	n2 := Node{ID: "n2", SessionID: "s1", Timestamp: time.Now().Add(time.Millisecond).UTC(),
+		ParentIDs: []ID{"n1"},
+		Message:   Message{System: &SystemMessage{Text: "sys"}}}
+
+	_, err := RestoreFromNodes(sess, []Node{n1, n2}, "n2", SessionStatusOpen, "", "")
+	if err == nil {
+		t.Fatal("expected error for cycle, got nil")
 	}
 }

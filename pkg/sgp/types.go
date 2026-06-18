@@ -207,6 +207,16 @@ const (
 	EventKindSessionEnded
 )
 
+// SessionStatus indicates whether a session is open or closed.
+type SessionStatus int
+
+const (
+	// SessionStatusOpen indicates the session is active and accepting new nodes.
+	SessionStatusOpen SessionStatus = 1
+	// SessionStatusClosed indicates the session has ended.
+	SessionStatusClosed SessionStatus = 2
+)
+
 // EndReason describes why a session terminated. It is carried on the
 // session.ended event and persisted in the graph snapshot.
 type EndReason string

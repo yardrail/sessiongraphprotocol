@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/google/uuid"
 )
@@ -12,28 +13,47 @@ var (
 	// ErrGraphNotFound indicates that a persisted graph could not be located.
 	ErrGraphNotFound = errors.New("graph not found")
 
+	// ErrSessionNotFound indicates that the requested session does not exist in the store.
+	ErrSessionNotFound = errors.New("session not found")
+
 	errUnexpectedSessionStart = errors.New("unexpected second session.start event")
 	errMissingNode            = errors.New("missing node")
 	errNodeIDRequired         = errors.New("node id is required")
 	errNodeSessionIDMismatch  = errors.New("node has wrong session id")
 	errMissingSessionStart    = errors.New("event log missing session.start event")
+	errCycleDetected          = errors.New("cycle detected in session node graph")
 )
 
-// Store persists SGP session events as an append-only log.
+// Store persists and retrieves SGP session data.
 //
-// AppendEvent appends a single event to the named session's log. Implementations
-// must return [ErrGraphNotFound] from LoadEvents when no events have been recorded
-// for the given session ID.
+// CreateSession records a new session. WriteNode appends or rewrites a node
+// (SynthesizedFrom distinguishes rewrite nodes). EndSession marks a session
+// closed. LoadGraph reconstructs an in-memory [Graph] from stored data.
 //
-// The Store interface makes no concurrency guarantees for writes to the same
-// session. Callers are responsible for serialising concurrent AppendEvent calls
+// The Store interface makes no concurrency guarantees for concurrent writes to
+// the same session. Callers are responsible for serialising concurrent writes
 // targeting the same sessionID.
-//
-// Implementations must restore the [Event.Kind] field on events returned by
-// LoadEvents using [ClassifyEvent].
 type Store interface {
-	AppendEvent(ctx context.Context, sessionID ID, event Event) error
-	LoadEvents(ctx context.Context, sessionID ID) ([]Event, error)
+	CreateSession(ctx context.Context, sess Session) error
+	WriteNode(ctx context.Context, node Node) error
+	EndSession(ctx context.Context, sessionID ID, reason EndReason, terminalNodeID ID) error
+
+	LoadGraph(ctx context.Context, sessionID ID) (*Graph, error)
+	GetNode(ctx context.Context, nodeID ID) (Node, error)
+	GetLineage(ctx context.Context, nodeID ID) ([]Node, error)
+	GetSession(ctx context.Context, sessionID ID) (Session, SessionStatus, error)
+	ListSessions(ctx context.Context, cursor string, limit int) ([]Session, string, error)
+}
+
+// Watcher is an optional interface implemented by stores with push notification
+// support. Callers type-assert: if w, ok := store.(sgp.Watcher); ok { ... }
+//
+// Watch subscribes to live node writes for sessionID. The returned channel
+// receives each Node written after the subscription is established. The cancel
+// func unsubscribes and closes the channel. Watch returns [ErrSessionNotFound]
+// if the session does not exist.
+type Watcher interface {
+	Watch(ctx context.Context, sessionID ID) (<-chan Node, func(), error)
 }
 
 // ClassifyEvent determines the EventKind for an event using field presence.
@@ -57,7 +77,7 @@ func ClassifyEvent(event Event) EventKind {
 }
 
 // RestoreFromEvents reconstructs an in-memory [Graph] from a persisted event log.
-// events must be ordered by emission time, as returned by [Store.LoadEvents].
+// events must be ordered by emission time, as returned by a store's LoadEvents call.
 //
 // EventNames are inferred from the event name strings observed in the log; any
 // kind not represented falls back to [DefaultEventNames]. The restored graph uses
@@ -99,6 +119,181 @@ func RestoreFromEvents(events []Event) (*Graph, error) {
 	graph.eventNames = eventNames
 
 	return graph, nil
+}
+
+// RestoreFromNodes reconstructs an in-memory [Graph] from a flat slice of nodes,
+// session metadata, and terminal state. It is used by stores that persist quads
+// or rows directly (e.g. Cayley) rather than event logs.
+//
+// nodes may arrive in any order; RestoreFromNodes topologically sorts them via
+// Kahn's algorithm before wiring the graph. Returns an error if a cycle is
+// detected or if a parent/synthesized-from reference is missing.
+//
+// The restored graph's events slice is empty; event replay is not required.
+func RestoreFromNodes(
+	sess Session,
+	nodes []Node,
+	headID ID,
+	status SessionStatus,
+	reason EndReason,
+	terminalNodeID ID,
+) (*Graph, error) {
+	nodeMap := make(map[ID]Node, len(nodes))
+	for _, n := range nodes {
+		nodeMap[n.ID] = n
+	}
+
+	sorted, err := topoSortNodes(nodeMap)
+	if err != nil {
+		return nil, err
+	}
+
+	graph := &Graph{
+		session: sess,
+		started: true,
+		nodes:   make(map[ID]Node, len(nodes)),
+		children: make(map[ID][]ID, len(nodes)),
+		headID:  headID,
+		idGenerator: func() ID {
+			return ID(uuid.NewString())
+		},
+		eventNames: DefaultEventNames(),
+	}
+
+	for _, n := range sorted {
+		graph.nodes[n.ID] = n
+		for _, parentID := range n.ParentIDs {
+			graph.children[parentID] = append(graph.children[parentID], n.ID)
+		}
+	}
+
+	if status == SessionStatusClosed {
+		graph.closed = true
+		graph.endReason = reason
+		graph.terminalNodeID = terminalNodeID
+	}
+
+	return graph, nil
+}
+
+// SynthesizeEvents reconstructs an ordered event slice from a Graph.
+// It is used by store backends that do not natively persist events (e.g. Cayley)
+// to produce an event log for the LoadEvents RPC wire format.
+func SynthesizeEvents(g *Graph) []Event {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	names := g.eventNames
+	if names.SessionStart == "" {
+		names = DefaultEventNames()
+	}
+
+	events := make([]Event, 0, len(g.nodes)+2)
+
+	events = append(events, Event{
+		Kind:        EventKindSessionStart,
+		Event:       names.SessionStart,
+		SessionID:   g.session.ID,
+		Timestamp:   g.session.Timestamp,
+		SpawnedFrom: copySpawnReference(g.session.SpawnedFrom),
+	})
+
+	sorted, _ := topoSortNodes(g.nodes)
+	for _, node := range sorted {
+		kind := EventKindNodeAppended
+		eventName := names.NodeAppended
+		if len(node.SynthesizedFrom) > 0 {
+			kind = EventKindHistoryRewritten
+			eventName = names.HistoryRewritten
+		}
+		n := copyNode(node)
+		events = append(events, Event{
+			Kind:      kind,
+			Event:     eventName,
+			SessionID: g.session.ID,
+			Timestamp: node.Timestamp,
+			Node:      &n,
+		})
+	}
+
+	if g.closed {
+		events = append(events, Event{
+			Kind:           EventKindSessionEnded,
+			Event:          names.SessionEnded,
+			SessionID:      g.session.ID,
+			Timestamp:      g.session.Timestamp,
+			TerminalNodeID: g.terminalNodeID,
+			Reason:         g.endReason,
+		})
+	}
+
+	return events
+}
+
+// topoSortNodes topologically sorts a node map via Kahn's algorithm.
+// Both ParentIDs and SynthesizedFrom are treated as ordering edges.
+// Within the same topological level, nodes are ordered by timestamp.
+func topoSortNodes(nodeMap map[ID]Node) ([]Node, error) {
+	inDegree := make(map[ID]int, len(nodeMap))
+	edgesFrom := make(map[ID][]ID, len(nodeMap))
+
+	for id := range nodeMap {
+		inDegree[id] = 0
+	}
+
+	for _, n := range nodeMap {
+		seen := make(map[ID]struct{}, len(n.ParentIDs)+len(n.SynthesizedFrom))
+		refs := make([]ID, 0, len(n.ParentIDs)+len(n.SynthesizedFrom))
+		refs = append(refs, n.ParentIDs...)
+		refs = append(refs, n.SynthesizedFrom...)
+
+		for _, ref := range refs {
+			if _, dup := seen[ref]; dup {
+				continue
+			}
+			if _, ok := nodeMap[ref]; !ok {
+				continue // ref outside session scope
+			}
+			seen[ref] = struct{}{}
+			inDegree[n.ID]++
+			edgesFrom[ref] = append(edgesFrom[ref], n.ID)
+		}
+	}
+
+	queue := make([]ID, 0, len(nodeMap))
+	for id, deg := range inDegree {
+		if deg == 0 {
+			queue = append(queue, id)
+		}
+	}
+
+	sort.Slice(queue, func(i, j int) bool {
+		return nodeMap[queue[i]].Timestamp.Before(nodeMap[queue[j]].Timestamp)
+	})
+
+	sorted := make([]Node, 0, len(nodeMap))
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		sorted = append(sorted, nodeMap[id])
+
+		children := edgesFrom[id]
+		sort.Slice(children, func(i, j int) bool {
+			return nodeMap[children[i]].Timestamp.Before(nodeMap[children[j]].Timestamp)
+		})
+		for _, childID := range children {
+			inDegree[childID]--
+			if inDegree[childID] == 0 {
+				queue = append(queue, childID)
+			}
+		}
+	}
+
+	if len(sorted) != len(nodeMap) {
+		return nil, errCycleDetected
+	}
+
+	return sorted, nil
 }
 
 // applyEventToGraph applies a single classified event to the graph being restored.

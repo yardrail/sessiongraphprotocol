@@ -8,14 +8,14 @@ import (
 	sgpv1 "github.com/restrukt-ai/sessiongraphprotocol/gen/sgp/v1"
 	"github.com/restrukt-ai/sessiongraphprotocol/gen/sgp/v1/sgpv1connect"
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/sgp"
-	"github.com/restrukt-ai/sessiongraphprotocol/pkg/store/pg"
+	cayleystore "github.com/restrukt-ai/sessiongraphprotocol/pkg/store/cayley"
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/store/sgpd/convert"
 )
 
 type managementHandler struct {
 	sgpv1connect.UnimplementedSGPManagementServiceHandler
 
-	store *pg.Store
+	store sgp.Store
 }
 
 func (h *managementHandler) ListSessions(
@@ -24,8 +24,8 @@ func (h *managementHandler) ListSessions(
 ) (*connect.Response[sgpv1.ListSessionsResponse], error) {
 	sessions, nextToken, err := h.store.ListSessions(
 		ctx,
-		int(req.Msg.GetLimit()),
 		req.Msg.GetPageToken(),
+		int(req.Msg.GetLimit()),
 	)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -51,9 +51,11 @@ func (h *managementHandler) GetSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, errSessionIDRequired)
 	}
 
-	info, err := h.store.GetSession(ctx, sgp.ID(req.Msg.GetSessionId()))
+	sessionID := sgp.ID(req.Msg.GetSessionId())
+
+	sess, status, err := h.store.GetSession(ctx, sessionID)
 	if err != nil {
-		if errors.Is(err, sgp.ErrGraphNotFound) {
+		if errors.Is(err, sgp.ErrSessionNotFound) || errors.Is(err, sgp.ErrGraphNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, err)
 		}
 
@@ -61,13 +63,21 @@ func (h *managementHandler) GetSession(
 	}
 
 	pbStatus := sgpv1.SessionStatus_SESSION_STATUS_OPEN
-	if info.Status == pg.SessionStatusClosed {
+	if status == sgp.SessionStatusClosed {
 		pbStatus = sgpv1.SessionStatus_SESSION_STATUS_CLOSED
 	}
 
+	// Get head node ID via LoadGraph.
+	var headID sgp.ID
+	if g, gErr := h.store.LoadGraph(ctx, sessionID); gErr == nil {
+		if head, ok := g.Head(); ok {
+			headID = head.ID
+		}
+	}
+
 	return connect.NewResponse(&sgpv1.GetSessionResponse{
-		Session:    convert.SessionToProto(info.Session),
-		HeadNodeId: string(info.HeadID),
+		Session:    convert.SessionToProto(sess),
+		HeadNodeId: string(headID),
 		Status:     pbStatus,
 	}), nil
 }
@@ -100,7 +110,7 @@ func (h *managementHandler) GetResumeContext(
 		return nil, connect.NewError(connect.CodeInvalidArgument, errNodeIDRequired)
 	}
 
-	nodes, err := h.store.GetResumeContext(ctx, sgp.ID(req.Msg.GetNodeId()))
+	nodes, err := h.store.GetLineage(ctx, sgp.ID(req.Msg.GetNodeId()))
 	if err != nil {
 		if errors.Is(err, sgp.ErrNodeNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, err)
@@ -110,7 +120,6 @@ func (h *managementHandler) GetResumeContext(
 	}
 
 	pbNodes := make([]*sgpv1.Node, len(nodes))
-
 	pbMsgs := make([]*sgpv1.Message, len(nodes))
 
 	for i, n := range nodes {
@@ -124,6 +133,11 @@ func (h *managementHandler) GetResumeContext(
 	}), nil
 }
 
+// sessionGrapher is the optional interface for stores that can return session graph data.
+type sessionGrapher interface {
+	GetSessionGraph(ctx context.Context, sessionID sgp.ID) ([]sgp.Node, []cayleystore.Edge, error)
+}
+
 func (h *managementHandler) GetSessionGraph(
 	ctx context.Context,
 	req *connect.Request[sgpv1.GetSessionGraphRequest],
@@ -132,7 +146,12 @@ func (h *managementHandler) GetSessionGraph(
 		return nil, connect.NewError(connect.CodeInvalidArgument, errSessionIDRequired)
 	}
 
-	nodes, edges, err := h.store.GetSessionGraph(ctx, sgp.ID(req.Msg.GetSessionId()))
+	sg, ok := h.store.(sessionGrapher)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("GetSessionGraph not supported by this store"))
+	}
+
+	nodes, edges, err := sg.GetSessionGraph(ctx, sgp.ID(req.Msg.GetSessionId()))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -161,129 +180,98 @@ func (h *managementHandler) WatchSession(
 		return connect.NewError(connect.CodeInvalidArgument, errSessionIDRequired)
 	}
 
+	watcher, ok := h.store.(sgp.Watcher)
+	if !ok {
+		return connect.NewError(connect.CodeUnimplemented, errors.New("watch not supported by this store"))
+	}
+
 	sessionID := sgp.ID(req.Msg.GetSessionId())
 
-	// Subscribe before loading history to avoid missing events.
-	ch, cancel := h.store.Subscribe(ctx, sessionID)
+	// Subscribe BEFORE loading history to avoid missing live events.
+	nodeCh, cancel, err := watcher.Watch(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, sgp.ErrSessionNotFound) {
+			return connect.NewError(connect.CodeNotFound, err)
+		}
+
+		return connect.NewError(connect.CodeInternal, err)
+	}
 	defer cancel()
 
-	lastSentSeq := int64(-1)
-
+	// Replay history if requested.
 	if req.Msg.GetReplayHistory() {
-		seq, err := h.sendHistoryEvents(ctx, sessionID, stream)
-		if err != nil {
-			return err
+		g, loadErr := h.store.LoadGraph(ctx, sessionID)
+		if loadErr != nil && !errors.Is(loadErr, sgp.ErrSessionNotFound) && !errors.Is(loadErr, sgp.ErrGraphNotFound) {
+			return connect.NewError(connect.CodeInternal, loadErr)
 		}
 
-		lastSentSeq = seq
-	}
-
-	return h.streamLiveEvents(ctx, ch, stream, lastSentSeq)
-}
-
-func (h *managementHandler) sendHistoryEvents(
-	ctx context.Context,
-	sessionID sgp.ID,
-	stream *connect.ServerStream[sgpv1.SessionObservation],
-) (int64, error) {
-	lastSentSeq := int64(-1)
-
-	rows, err := h.store.LoadEventsWithSeq(ctx, sessionID)
-	if err != nil && !errors.Is(err, sgp.ErrGraphNotFound) {
-		return lastSentSeq, connect.NewError(connect.CodeInternal, err)
-	}
-
-	for _, row := range rows {
-		err = stream.Send(eventRowToObservation(row))
-		if err != nil {
-			return lastSentSeq, err
+		if g != nil {
+			for _, e := range sgp.SynthesizeEvents(g) {
+				if sendErr := stream.Send(eventToObservation(e)); sendErr != nil {
+					return sendErr
+				}
+			}
 		}
-
-		lastSentSeq = row.Seq
 	}
 
-	return lastSentSeq, nil
-}
-
-func (h *managementHandler) streamLiveEvents(
-	ctx context.Context,
-	ch <-chan pg.Observation,
-	stream *connect.ServerStream[sgpv1.SessionObservation],
-	lastSentSeq int64,
-) error {
+	// Stream live nodes.
 	for {
-		done, seq, err := h.receiveObservation(ctx, ch, stream, lastSentSeq)
-		if done || err != nil {
-			return err
-		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case node, ok := <-nodeCh:
+			if !ok {
+				return nil
+			}
 
-		lastSentSeq = seq
+			e := nodeToEvent(node)
+			if sendErr := stream.Send(eventToObservation(e)); sendErr != nil {
+				return sendErr
+			}
+		}
 	}
 }
 
-func (h *managementHandler) receiveObservation(
-	ctx context.Context,
-	ch <-chan pg.Observation,
-	stream *connect.ServerStream[sgpv1.SessionObservation],
-	lastSentSeq int64,
-) (bool, int64, error) {
-	select {
-	case <-ctx.Done():
-		return true, lastSentSeq, nil
-	case ob, ok := <-ch:
-		if !ok {
-			return true, lastSentSeq, nil
-		}
+func nodeToEvent(node sgp.Node) sgp.Event {
+	kind := sgp.EventKindNodeAppended
+	name := sgp.DefaultEventNames().NodeAppended
 
-		if ob.Seq <= lastSentSeq {
-			return false, lastSentSeq, nil
-		}
+	if len(node.SynthesizedFrom) > 0 {
+		kind = sgp.EventKindHistoryRewritten
+		name = sgp.DefaultEventNames().HistoryRewritten
+	}
 
-		sendErr := stream.Send(observationToProto(ob))
-		if sendErr != nil {
-			return true, lastSentSeq, sendErr
-		}
+	n := node
 
-		return false, ob.Seq, nil
+	return sgp.Event{
+		Kind:      kind,
+		Event:     name,
+		SessionID: node.SessionID,
+		Timestamp: node.Timestamp,
+		Node:      &n,
 	}
 }
 
-func eventRowToObservation(row pg.EventRow) *sgpv1.SessionObservation {
-	var headID sgp.ID
-	if row.Event.Node != nil {
-		headID = row.Event.Node.ID
-	} else if row.Event.TerminalNodeID != "" {
-		headID = row.Event.TerminalNodeID
-	}
-
+func eventToObservation(e sgp.Event) *sgpv1.SessionObservation {
 	pbStatus := sgpv1.SessionStatus_SESSION_STATUS_OPEN
 	pbReason := sgpv1.EndReason_END_REASON_UNSPECIFIED
 
-	if row.Event.Kind == sgp.EventKindSessionEnded {
+	var headID sgp.ID
+	if e.Node != nil {
+		headID = e.Node.ID
+	}
+
+	if e.Kind == sgp.EventKindSessionEnded {
 		pbStatus = sgpv1.SessionStatus_SESSION_STATUS_CLOSED
-		pbReason = protoEndReason(row.Event.Reason)
+		pbReason = protoEndReason(e.Reason)
+		headID = e.TerminalNodeID
 	}
 
 	return &sgpv1.SessionObservation{
-		Event:      convert.EventToProto(row.Event),
+		Event:      convert.EventToProto(e),
 		HeadNodeId: string(headID),
 		Status:     pbStatus,
 		EndReason:  pbReason,
-	}
-}
-
-func observationToProto(ob pg.Observation) *sgpv1.SessionObservation {
-	pbStatus := sgpv1.SessionStatus_SESSION_STATUS_OPEN
-	if ob.Status == pg.SessionStatusClosed {
-		pbStatus = sgpv1.SessionStatus_SESSION_STATUS_CLOSED
-	}
-
-	return &sgpv1.SessionObservation{
-		Event:      convert.EventToProto(ob.Event),
-		HeadNodeId: string(ob.HeadID),
-		Status:     pbStatus,
-		EndReason:  protoEndReason(ob.EndReason),
-		NodeCount:  ob.NodeCount,
 	}
 }
 

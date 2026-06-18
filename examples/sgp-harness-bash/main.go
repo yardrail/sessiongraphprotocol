@@ -11,6 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	cayleygraph "github.com/cayleygraph/cayley/graph"
+	_ "github.com/cayleygraph/cayley/graph/bolt"
+	_ "github.com/cayleygraph/cayley/graph/memstore"
+	cayleystore "github.com/restrukt-ai/sessiongraphprotocol/pkg/store/cayley"
 )
 
 type stringSlice []string
@@ -50,12 +55,27 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	storePath := filepath.Join(*sessionDir, "cayley.db")
+	if err := os.MkdirAll(*sessionDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating session dir: %v\n", err)
+		os.Exit(1)
+	}
+
+	qs, err := cayleygraph.NewQuadStore("bolt", storePath, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error opening store: %v\n", err)
+		os.Exit(1)
+	}
+	store := cayleystore.New(qs)
+
 	peersDesc := buildPeersDesc(peers)
 	systemPrompt := *system
 	if peersDesc != "" {
 		systemPrompt += "\n\n" + peersDesc
 	}
+
 	h, sid, err := newHarness(
+		store,
 		*sessionDir,
 		*sessionID,
 		*ollamaURL,
@@ -70,7 +90,7 @@ func main() {
 	}
 
 	absDir, _ := filepath.Abs(*sessionDir)
-	fmt.Printf("session:  %s\nsnapshot: %s/%s.json\n\n", sid, absDir, sid)
+	fmt.Printf("session:  %s\nstore:    %s/cayley.db\n\n", sid, absDir)
 
 	selfPath, _ := os.Executable()
 
@@ -89,15 +109,18 @@ func main() {
 
 	teleported := false
 	scanner := bufio.NewScanner(os.Stdin)
+
 	for {
 		fmt.Print("> ")
 		if !scanner.Scan() {
 			break
 		}
+
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
+
 		if line == ":quit" || line == ":exit" {
 			break
 		}
@@ -107,6 +130,7 @@ func main() {
 			teleported = true
 			break
 		}
+
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			if ctx.Err() != nil {
@@ -114,6 +138,7 @@ func main() {
 			}
 			continue
 		}
+
 		fmt.Println(response)
 		fmt.Println()
 	}
@@ -121,5 +146,6 @@ func main() {
 	if teleported {
 		os.Exit(0)
 	}
+
 	h.close(context.Background())
 }

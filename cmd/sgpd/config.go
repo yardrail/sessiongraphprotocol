@@ -7,7 +7,6 @@ import (
 )
 
 var (
-	errDatabaseURLRequired     = errors.New("--database-url is required")
 	errHarnessTokenRequired    = errors.New("--harness-token is required")
 	errManagementTokenRequired = errors.New("--management-token is required")
 	errInvalidBearerToken      = errors.New("invalid bearer token")
@@ -17,7 +16,8 @@ var (
 )
 
 type config struct {
-	DatabaseURL     string
+	StoreBackend    string
+	StorePath       string
 	HarnessAddr     string
 	HarnessToken    string
 	ManagementAddr  string
@@ -28,7 +28,8 @@ type config struct {
 
 func loadConfig(v *viper.Viper) (config, error) {
 	cfg := config{
-		DatabaseURL:     v.GetString("database-url"),
+		StoreBackend:    v.GetString("store-backend"),
+		StorePath:       v.GetString("store-path"),
 		HarnessAddr:     v.GetString("harness-addr"),
 		HarnessToken:    v.GetString("harness-token"),
 		ManagementAddr:  v.GetString("management-addr"),
@@ -37,11 +38,15 @@ func loadConfig(v *viper.Viper) (config, error) {
 		TLSKey:          v.GetString("tls-key"),
 	}
 
-	var errs []error
-
-	if cfg.DatabaseURL == "" {
-		errs = append(errs, errDatabaseURLRequired)
+	if cfg.StoreBackend == "" {
+		cfg.StoreBackend = "bolt"
 	}
+
+	if cfg.StorePath == "" {
+		cfg.StorePath = "./sgpd-data"
+	}
+
+	var errs []error
 
 	if cfg.HarnessToken == "" {
 		errs = append(errs, errHarnessTokenRequired)
@@ -51,6 +56,5 @@ func loadConfig(v *viper.Viper) (config, error) {
 		errs = append(errs, errManagementTokenRequired)
 	}
 
-	// TLS is optional: omit cert/key for plain HTTP (dev only).
 	return cfg, errors.Join(errs...)
 }
