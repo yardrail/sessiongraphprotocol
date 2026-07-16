@@ -26,9 +26,9 @@ var (
 
 // Store persists and retrieves SGP session data.
 //
-// CreateSession records a new session. WriteNode appends or rewrites a node
-// (SynthesizedFrom distinguishes rewrite nodes). EndSession marks a session
-// closed. LoadGraph reconstructs an in-memory [Graph] from stored data.
+// CreateSession records a new session. WriteNode appends a node.
+// EndSession marks a session closed. LoadGraph reconstructs an in-memory [Graph]
+// from stored data.
 //
 // The Store interface makes no concurrency guarantees for concurrent writes to
 // the same session. Callers are responsible for serialising concurrent writes
@@ -62,10 +62,6 @@ type Watcher interface {
 // loaded from persistent storage (Kind is not serialised).
 func ClassifyEvent(event Event) EventKind {
 	if event.Node != nil {
-		if len(event.Node.SynthesizedFrom) > 0 {
-			return EventKindHistoryRewritten
-		}
-
 		return EventKindNodeAppended
 	}
 
@@ -81,8 +77,8 @@ func ClassifyEvent(event Event) EventKind {
 //
 // EventNames are inferred from the event name strings observed in the log; any
 // kind not represented falls back to [DefaultEventNames]. The restored graph uses
-// the inferred names for all future [Graph.Append], [Graph.Rewrite], and
-// [Graph.End] calls, preserving custom event name configuration across restarts.
+// the inferred names for all future [Graph.Append] and [Graph.End] calls,
+// preserving custom event name configuration across restarts.
 //
 // Returns [ErrGraphNotFound] if events is empty.
 func RestoreFromEvents(events []Event) (*Graph, error) {
@@ -127,7 +123,7 @@ func RestoreFromEvents(events []Event) (*Graph, error) {
 //
 // nodes may arrive in any order; RestoreFromNodes topologically sorts them via
 // Kahn's algorithm before wiring the graph. Returns an error if a cycle is
-// detected or if a parent/synthesized-from reference is missing.
+// detected or if a parent reference is missing.
 //
 // The restored graph's events slice is empty; event replay is not required.
 func RestoreFromNodes(
@@ -162,7 +158,7 @@ func RestoreFromNodes(
 
 	for _, n := range sorted {
 		graph.nodes[n.ID] = n
-		for _, parentID := range n.ParentIDs {
+		for _, parentID := range n.Parents() {
 			graph.children[parentID] = append(graph.children[parentID], n.ID)
 		}
 	}
@@ -200,16 +196,10 @@ func SynthesizeEvents(g *Graph) []Event {
 
 	sorted, _ := topoSortNodes(g.nodes)
 	for _, node := range sorted {
-		kind := EventKindNodeAppended
-		eventName := names.NodeAppended
-		if len(node.SynthesizedFrom) > 0 {
-			kind = EventKindHistoryRewritten
-			eventName = names.HistoryRewritten
-		}
 		n := copyNode(node)
 		events = append(events, Event{
-			Kind:      kind,
-			Event:     eventName,
+			Kind:      EventKindNodeAppended,
+			Event:     names.NodeAppended,
 			SessionID: g.session.ID,
 			Timestamp: node.Timestamp,
 			Node:      &n,
@@ -230,8 +220,21 @@ func SynthesizeEvents(g *Graph) []Event {
 	return events
 }
 
+// nodeDependencyIDs returns all node IDs that must be sorted before n.
+// Includes both EdgeKindParent and EdgeKindBranchFrom edges, since a branch
+// node must sort after its origin even though it is not a canonical parent.
+func nodeDependencyIDs(n Node) []ID {
+	var ids []ID
+	for _, e := range n.Edges {
+		if e.Kind == EdgeKindParent || e.Kind == EdgeKindBranchFrom {
+			ids = append(ids, e.NodeID)
+		}
+	}
+	return ids
+}
+
 // topoSortNodes topologically sorts a node map via Kahn's algorithm.
-// Both ParentIDs and SynthesizedFrom are treated as ordering edges.
+// Parent edges (via Parents()) are treated as ordering edges.
 // Within the same topological level, nodes are ordered by timestamp.
 func topoSortNodes(nodeMap map[ID]Node) ([]Node, error) {
 	inDegree := make(map[ID]int, len(nodeMap))
@@ -242,10 +245,8 @@ func topoSortNodes(nodeMap map[ID]Node) ([]Node, error) {
 	}
 
 	for _, n := range nodeMap {
-		seen := make(map[ID]struct{}, len(n.ParentIDs)+len(n.SynthesizedFrom))
-		refs := make([]ID, 0, len(n.ParentIDs)+len(n.SynthesizedFrom))
-		refs = append(refs, n.ParentIDs...)
-		refs = append(refs, n.SynthesizedFrom...)
+		refs := nodeDependencyIDs(n)
+		seen := make(map[ID]struct{}, len(refs))
 
 		for _, ref := range refs {
 			if _, dup := seen[ref]; dup {
@@ -307,8 +308,8 @@ func applyEventToGraph(
 	switch kind {
 	case EventKindSessionStart:
 		return applySessionStartEvent(graph, eventNames, i, event)
-	case EventKindNodeAppended, EventKindHistoryRewritten:
-		return applyNodeEvent(graph, eventNames, i, event, kind)
+	case EventKindNodeAppended:
+		return applyNodeEvent(graph, eventNames, i, event)
 	case EventKindSessionEnded:
 		graph.closed = true
 		graph.terminalNodeID = event.TerminalNodeID
@@ -338,13 +339,12 @@ func applySessionStartEvent(graph *Graph, eventNames *EventNames, i int, event E
 	return nil
 }
 
-// applyNodeEvent handles a node.appended or history.rewritten event during restore.
+// applyNodeEvent handles a node.appended event during restore.
 func applyNodeEvent(
 	graph *Graph,
 	eventNames *EventNames,
 	i int,
 	event Event,
-	kind EventKind,
 ) error {
 	if event.Node == nil {
 		return fmt.Errorf("event at index %d: %w", i, errMissingNode)
@@ -372,27 +372,16 @@ func applyNodeEvent(
 		return err
 	}
 
-	err = checkSynthesizedSources(graph, i, node)
-	if err != nil {
-		return err
-	}
-
 	graph.nodes[node.ID] = node
-
 	graph.headID = node.ID
-
-	if kind == EventKindNodeAppended {
-		eventNames.NodeAppended = event.Event
-	} else {
-		eventNames.HistoryRewritten = event.Event
-	}
+	eventNames.NodeAppended = event.Event
 
 	return nil
 }
 
 // linkNodeParents wires parent→child edges for a node being restored.
 func linkNodeParents(graph *Graph, i int, node Node) error {
-	for _, parentID := range node.ParentIDs {
+	for _, parentID := range node.Parents() {
 		if _, exists := graph.nodes[parentID]; !exists {
 			return fmt.Errorf(
 				"event at index %d: %w: parent %s missing for node %s",
@@ -404,23 +393,6 @@ func linkNodeParents(graph *Graph, i int, node Node) error {
 		}
 
 		graph.children[parentID] = append(graph.children[parentID], node.ID)
-	}
-
-	return nil
-}
-
-// checkSynthesizedSources verifies all synthesized-from references exist.
-func checkSynthesizedSources(graph *Graph, i int, node Node) error {
-	for _, sourceID := range node.SynthesizedFrom {
-		if _, exists := graph.nodes[sourceID]; !exists {
-			return fmt.Errorf(
-				"event at index %d: %w: synthesized source %s missing for node %s",
-				i,
-				ErrNodeNotFound,
-				sourceID,
-				node.ID,
-			)
-		}
 	}
 
 	return nil

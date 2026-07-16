@@ -43,7 +43,7 @@ func (h *harnessHandler) AppendEvent(
 			SpawnedFrom: event.SpawnedFrom,
 		}
 		err = h.store.CreateSession(ctx, sess)
-	case sgp.EventKindNodeAppended, sgp.EventKindHistoryRewritten:
+	case sgp.EventKindNodeAppended:
 		if event.Node == nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("event missing node"))
 		}

@@ -22,10 +22,6 @@ var (
 	// ErrInvalidRoot indicates that a root append was attempted after initialization.
 	ErrInvalidRoot = errors.New("root node must be the first node in the graph")
 
-	errRewriteRequiresCanonicalParent   = errors.New("rewrite requires a canonical parent")
-	errRewriteRequiresSynthesizedSource = errors.New(
-		"rewrite requires at least one synthesized source",
-	)
 	errInvalidEndReason   = errors.New("invalid end reason")
 	errMissingEventName   = errors.New("missing event name for kind")
 	errMessageSubtype     = errors.New("message must have exactly one subtype set")
@@ -95,8 +91,8 @@ type Graph struct {
 }
 
 // NewGraph creates a new in-memory session graph. Call [Graph.Start] to formally
-// begin the session and emit the session.start event. Append, Rewrite, and End
-// all require Start to have been called first.
+// begin the session and emit the session.start event. Append, AppendTypedNode,
+// and End all require Start to have been called first.
 func NewGraph(options ...Option) *Graph {
 	cfg := config{
 		idGenerator: func() ID {
@@ -126,7 +122,7 @@ func NewGraph(options ...Option) *Graph {
 }
 
 // Start formally begins the session and emits the session.start event. It must
-// be called before Append, Rewrite, or End. Returns [ErrSessionAlreadyStarted]
+// be called before Append, AppendTypedNode, or End. Returns [ErrSessionAlreadyStarted]
 // if called more than once, and [ErrSessionClosed] if the graph is already closed.
 func (graph *Graph) Start() (Event, error) {
 	graph.mu.Lock()
@@ -211,7 +207,7 @@ func (graph *Graph) Append(message Message, parentIDs ...ID) (Node, Event, error
 	graph.mu.Lock()
 	defer graph.mu.Unlock()
 
-	node, event, err := graph.appendNode(EventKindNodeAppended, message, parentIDs, nil)
+	node, event, err := graph.appendNode(EventKindNodeAppended, message, parentIDs)
 	if err != nil {
 		return Node{}, Event{}, err
 	}
@@ -219,34 +215,43 @@ func (graph *Graph) Append(message Message, parentIDs ...ID) (Node, Event, error
 	return copyNode(node), copyEvent(event), nil
 }
 
-// Rewrite creates a rewrite node and emits a history rewritten event.
-func (graph *Graph) Rewrite(
-	message Message,
-	parentID ID,
-	synthesizedFrom ...ID,
-) (Node, Event, error) {
+// AppendTypedNode creates a typed node with the given kind, message, extra edges, and content.
+// The content parameter must be one of *MemoryContent, *SkillContent, *IdentityContent,
+// *SleepContent, or nil for experience nodes. parentIDs follow the same rules as Append.
+func (graph *Graph) AppendTypedNode(
+	kind NodeKind,
+	msg Message,
+	edges []EdgeRef,
+	content interface{},
+	parentIDs ...ID,
+) (Node, ID, error) {
 	graph.mu.Lock()
 	defer graph.mu.Unlock()
 
-	if parentID == "" {
-		return Node{}, Event{}, errRewriteRequiresCanonicalParent
-	}
-
-	if len(synthesizedFrom) == 0 {
-		return Node{}, Event{}, errRewriteRequiresSynthesizedSource
-	}
-
-	node, event, err := graph.appendNode(
-		EventKindHistoryRewritten,
-		message,
-		[]ID{parentID},
-		synthesizedFrom,
-	)
+	node, _, err := graph.appendNode(EventKindNodeAppended, msg, parentIDs)
 	if err != nil {
-		return Node{}, Event{}, err
+		return Node{}, "", err
 	}
 
-	return copyNode(node), copyEvent(event), nil
+	node.Kind = kind
+	node.Edges = append(node.Edges, edges...)
+
+	switch c := content.(type) {
+	case *MemoryContent:
+		node.Memory = c
+	case *SkillContent:
+		node.Skill = c
+	case *IdentityContent:
+		node.Identity = c
+	case *SleepContent:
+		node.Sleep = c
+	}
+
+	graph.nodes[node.ID] = copyNode(node)
+	n := copyNode(node)
+	graph.events[len(graph.events)-1].Node = &n
+
+	return copyNode(node), node.ID, nil
 }
 
 // End emits a session ended event. reason must be one of [EndReasonComplete] or
@@ -322,6 +327,33 @@ func (graph *Graph) ResumeMessages(nodeID ID) ([]Message, error) {
 }
 
 // NeedsResponse reports whether a leaf node implies pending inference work.
+// AdvanceHead walks single-child EdgeKindParent edges from fromID until reaching
+// a node with no EdgeKindParent children, returning the leaf ID. If fromID already
+// has no children, it returns fromID. If fromID has multiple EdgeKindParent children
+// (should not occur with proper locking), it stops and returns the current node.
+// AdvanceHead is safe for concurrent use.
+func (graph *Graph) AdvanceHead(fromID ID) (ID, error) {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
+
+	if _, ok := graph.nodes[fromID]; !ok {
+		return "", fmt.Errorf("%w: %s", ErrNodeNotFound, fromID)
+	}
+
+	current := fromID
+	for {
+		children := graph.children[current]
+		if len(children) == 0 {
+			return current, nil
+		}
+		if len(children) > 1 {
+			// Real branch point — don't auto-advance.
+			return current, nil
+		}
+		current = children[0]
+	}
+}
+
 func (graph *Graph) NeedsResponse(nodeID ID) (bool, error) {
 	graph.mu.RLock()
 	defer graph.mu.RUnlock()
@@ -337,7 +369,7 @@ func (graph *Graph) NeedsResponse(nodeID ID) (bool, error) {
 func (graph *Graph) appendNode(
 	kind EventKind,
 	message Message,
-	parentIDs, synthesizedFrom []ID,
+	parentIDs []ID,
 ) (Node, Event, error) {
 	if graph.closed {
 		return Node{}, Event{}, ErrSessionClosed
@@ -364,22 +396,21 @@ func (graph *Graph) appendNode(
 		return Node{}, Event{}, err
 	}
 
-	validatedSources, err := graph.validateNodeReferences(synthesizedFrom)
-	if err != nil {
-		return Node{}, Event{}, err
+	edges := make([]EdgeRef, 0, len(validatedParents))
+	for _, pid := range validatedParents {
+		edges = append(edges, EdgeRef{Kind: EdgeKindParent, NodeID: pid})
 	}
 
 	node := Node{
-		ID:              graph.idGenerator(),
-		SessionID:       graph.session.ID,
-		Timestamp:       time.Now().UTC(),
-		ParentIDs:       validatedParents,
-		SynthesizedFrom: validatedSources,
-		Message:         copyMessage(message),
+		ID:        graph.idGenerator(),
+		SessionID: graph.session.ID,
+		Timestamp: time.Now().UTC(),
+		Edges:     edges,
+		Message:   copyMessage(message),
 	}
 
 	graph.nodes[node.ID] = copyNode(node)
-	for _, parentID := range node.ParentIDs {
+	for _, parentID := range node.Parents() {
 		graph.children[parentID] = append(graph.children[parentID], node.ID)
 	}
 
@@ -431,8 +462,8 @@ func (graph *Graph) resumeNodes(nodeID ID) ([]Node, error) {
 	lineage := []Node{copyNode(node)}
 	current := node
 
-	for len(current.ParentIDs) != 0 {
-		parentID := current.ParentIDs[0]
+	for len(current.Parents()) != 0 {
+		parentID := current.Parents()[0]
 
 		parent, exists := graph.nodes[parentID]
 		if !exists {
@@ -457,10 +488,53 @@ func copyNode(node Node) Node {
 		ID:              node.ID,
 		SessionID:       node.SessionID,
 		Timestamp:       node.Timestamp,
-		ParentIDs:       append([]ID(nil), node.ParentIDs...),
-		SynthesizedFrom: append([]ID(nil), node.SynthesizedFrom...),
 		Message:         node.Message,
+		Kind:            node.Kind,
+		Edges:           append([]EdgeRef(nil), node.Edges...),
+		Archived:        node.Archived,
+		Memory:          copyMemoryContent(node.Memory),
+		Skill:           copySkillContent(node.Skill),
+		Identity:        copyIdentityContent(node.Identity),
+		Sleep:           copySleepContent(node.Sleep),
 	}
+}
+
+func copyMemoryContent(m *MemoryContent) *MemoryContent {
+	if m == nil {
+		return nil
+	}
+	cp := *m
+	if len(m.Tags) > 0 {
+		cp.Tags = append([]string(nil), m.Tags...)
+	}
+	return &cp
+}
+
+func copySkillContent(s *SkillContent) *SkillContent {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	return &cp
+}
+
+func copyIdentityContent(i *IdentityContent) *IdentityContent {
+	if i == nil {
+		return nil
+	}
+	return &IdentityContent{
+		Traits: append([]string(nil), i.Traits...),
+		Values: append([]string(nil), i.Values...),
+		Goals:  append([]string(nil), i.Goals...),
+	}
+}
+
+func copySleepContent(s *SleepContent) *SleepContent {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	return &cp
 }
 
 func copyMessage(msg Message) Message {

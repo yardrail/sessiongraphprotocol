@@ -233,19 +233,11 @@ func (h *managementHandler) WatchSession(
 }
 
 func nodeToEvent(node sgp.Node) sgp.Event {
-	kind := sgp.EventKindNodeAppended
-	name := sgp.DefaultEventNames().NodeAppended
-
-	if len(node.SynthesizedFrom) > 0 {
-		kind = sgp.EventKindHistoryRewritten
-		name = sgp.DefaultEventNames().HistoryRewritten
-	}
-
 	n := node
 
 	return sgp.Event{
-		Kind:      kind,
-		Event:     name,
+		Kind:      sgp.EventKindNodeAppended,
+		Event:     sgp.DefaultEventNames().NodeAppended,
 		SessionID: node.SessionID,
 		Timestamp: node.Timestamp,
 		Node:      &n,

@@ -337,7 +337,7 @@ func toOllamaMessages(nodes []sgp.Node) []ollamaMessage {
 	msgs := make([]ollamaMessage, 0, len(nodes))
 
 	for _, node := range nodes {
-		if len(node.SynthesizedFrom) > 0 {
+		if node.EffectiveKind() != sgp.NodeKindExperience || node.Archived {
 			continue
 		}
 

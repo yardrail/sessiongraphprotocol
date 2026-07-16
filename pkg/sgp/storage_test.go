@@ -33,26 +33,6 @@ func TestClassifyEventNodeAppended(t *testing.T) {
 	}
 }
 
-func TestClassifyEventHistoryRewritten(t *testing.T) {
-	t.Parallel()
-
-	event := Event{
-		Event: "history.rewritten",
-		Node: &Node{
-			ID:              "n2",
-			SessionID:       "s1",
-			SynthesizedFrom: []ID{"n1"},
-			Message: Message{
-				Assistant: &AssistantMessage{
-					Parts: []ContentPart{{Text: &TextPart{Text: "merged"}}},
-				},
-			},
-		},
-	}
-	if got, want := ClassifyEvent(event), EventKindHistoryRewritten; got != want {
-		t.Fatalf("expected %d, got %d", want, got)
-	}
-}
 
 func TestClassifyEventSessionEndedByReason(t *testing.T) {
 	t.Parallel()
@@ -337,94 +317,6 @@ func TestRestoreFromEventsEndReasonPreserved(t *testing.T) {
 	}
 }
 
-func buildHistoryRewriteGraph(t *testing.T) (*Graph, Node) {
-	t.Helper()
-
-	graph := NewGraph(
-		WithIDGenerator(sequenceIDs("s1", "n-sys", "n-user", "n-b1", "n-b2", "n-merge")),
-	)
-
-	_, err := graph.Start()
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	root, _, err := graph.Append(Message{System: &SystemMessage{Text: "sys"}})
-	if err != nil {
-		t.Fatalf("append root: %v", err)
-	}
-
-	canonical, _, err := graph.Append(
-		Message{User: &UserMessage{Parts: []ContentPart{{Text: &TextPart{Text: "ask"}}}}},
-		root.ID,
-	)
-	if err != nil {
-		t.Fatalf("append canonical: %v", err)
-	}
-
-	b1, _, err := graph.Append(
-		Message{
-			Assistant: &AssistantMessage{Parts: []ContentPart{{Text: &TextPart{Text: "branch-1"}}}},
-		},
-		canonical.ID,
-	)
-	if err != nil {
-		t.Fatalf("append b1: %v", err)
-	}
-
-	b2, _, err := graph.Append(
-		Message{
-			Assistant: &AssistantMessage{Parts: []ContentPart{{Text: &TextPart{Text: "branch-2"}}}},
-		},
-		canonical.ID,
-	)
-	if err != nil {
-		t.Fatalf("append b2: %v", err)
-	}
-
-	mergeNode, _, err := graph.Rewrite(
-		Message{
-			Assistant: &AssistantMessage{Parts: []ContentPart{{Text: &TextPart{Text: "merged"}}}},
-		},
-		canonical.ID,
-		b1.ID,
-		b2.ID,
-	)
-	if err != nil {
-		t.Fatalf("rewrite: %v", err)
-	}
-
-	return graph, mergeNode
-}
-
-func TestRestoreFromEventsHistoryRewrite(t *testing.T) {
-	t.Parallel()
-
-	graph, mergeNode := buildHistoryRewriteGraph(t)
-
-	restored, err := RestoreFromEvents(graph.Events())
-	if err != nil {
-		t.Fatalf("restore: %v", err)
-	}
-
-	lineage, err := restored.ResumeNodes(mergeNode.ID)
-	if err != nil {
-		t.Fatalf("resume nodes: %v", err)
-	}
-
-	// Canonical lineage: root → canonical → mergeNode (branches excluded).
-	if got, want := len(lineage), 3; got != want {
-		t.Fatalf("expected canonical lineage length %d, got %d", want, got)
-	}
-
-	if got, want := lineage[2].Message.TextContent(), "merged"; got != want {
-		t.Fatalf("expected merge node content %q, got %q", want, got)
-	}
-
-	if got, want := len(lineage[2].SynthesizedFrom), 2; got != want {
-		t.Fatalf("expected 2 synthesized sources, got %d", got)
-	}
-}
 
 func TestRestoreFromEventsSubagentSpawnedFrom(t *testing.T) {
 	t.Parallel()
@@ -469,10 +361,9 @@ func TestRestoreFromEventsCustomEventNames(t *testing.T) {
 	t.Parallel()
 
 	customNames := EventNames{
-		SessionStart:     "sgp.session.started",
-		NodeAppended:     "sgp.node.appended",
-		HistoryRewritten: "sgp.history.rewritten",
-		SessionEnded:     "sgp.session.ended",
+		SessionStart: "sgp.session.started",
+		NodeAppended: "sgp.node.appended",
+		SessionEnded: "sgp.session.ended",
 	}
 
 	graph := NewGraph(
@@ -541,7 +432,7 @@ func TestRestoreFromEventsMissingParentReturnsError(t *testing.T) {
 		Node: &Node{
 			ID:        "n1",
 			SessionID: "s1",
-			ParentIDs: []ID{"missing-parent"},
+			Edges:     []EdgeRef{{Kind: EdgeKindParent, NodeID: "missing-parent"}},
 			Message:   Message{User: &UserMessage{}},
 		},
 	}
@@ -561,11 +452,11 @@ func TestRestoreFromNodesLinear(t *testing.T) {
 	n1 := Node{ID: "n1", SessionID: "s1", Timestamp: time.Now().UTC(),
 		Message: Message{System: &SystemMessage{Text: "system prompt"}}}
 	n2 := Node{ID: "n2", SessionID: "s1", Timestamp: time.Now().Add(time.Millisecond).UTC(),
-		ParentIDs: []ID{"n1"},
-		Message:   Message{User: &UserMessage{Parts: []ContentPart{{Text: &TextPart{Text: "hello"}}}}}}
+		Edges:   []EdgeRef{{Kind: EdgeKindParent, NodeID: "n1"}},
+		Message: Message{User: &UserMessage{Parts: []ContentPart{{Text: &TextPart{Text: "hello"}}}}}}
 	n3 := Node{ID: "n3", SessionID: "s1", Timestamp: time.Now().Add(2 * time.Millisecond).UTC(),
-		ParentIDs: []ID{"n2"},
-		Message:   Message{Assistant: &AssistantMessage{Parts: []ContentPart{{Text: &TextPart{Text: "hi"}}}}}}
+		Edges:   []EdgeRef{{Kind: EdgeKindParent, NodeID: "n2"}},
+		Message: Message{Assistant: &AssistantMessage{Parts: []ContentPart{{Text: &TextPart{Text: "hi"}}}}}}
 
 	g, err := RestoreFromNodes(sess, []Node{n3, n1, n2}, "n3", SessionStatusOpen, "", "")
 	if err != nil {
@@ -575,34 +466,6 @@ func TestRestoreFromNodesLinear(t *testing.T) {
 	assertLinearSessionMessages(t, g)
 }
 
-func TestRestoreFromNodesRewrite(t *testing.T) {
-	t.Parallel()
-
-	graph, mergeNode := buildHistoryRewriteGraph(t)
-	sess := graph.Session()
-	var nodes []Node
-	for _, e := range graph.Events() {
-		if e.Node != nil {
-			nodes = append(nodes, *e.Node)
-		}
-	}
-
-	g, err := RestoreFromNodes(sess, nodes, mergeNode.ID, SessionStatusOpen, "", "")
-	if err != nil {
-		t.Fatalf("RestoreFromNodes: %v", err)
-	}
-
-	lineage, err := g.ResumeNodes(mergeNode.ID)
-	if err != nil {
-		t.Fatalf("ResumeNodes: %v", err)
-	}
-	if got, want := len(lineage), 3; got != want {
-		t.Fatalf("expected canonical lineage length %d, got %d", want, got)
-	}
-	if lineage[2].Message.TextContent() != "merged" {
-		t.Fatalf("unexpected merge node content: %q", lineage[2].Message.TextContent())
-	}
-}
 
 func TestRestoreFromNodesSubagentSpawn(t *testing.T) {
 	t.Parallel()
@@ -657,11 +520,11 @@ func TestRestoreFromNodesFanOut(t *testing.T) {
 	root := Node{ID: "root", SessionID: "s1", Timestamp: time.Now().UTC(),
 		Message: Message{System: &SystemMessage{Text: "sys"}}}
 	b1 := Node{ID: "b1", SessionID: "s1", Timestamp: time.Now().Add(time.Millisecond).UTC(),
-		ParentIDs: []ID{"root"},
-		Message:   Message{Assistant: &AssistantMessage{}}}
+		Edges:   []EdgeRef{{Kind: EdgeKindParent, NodeID: "root"}},
+		Message: Message{Assistant: &AssistantMessage{}}}
 	b2 := Node{ID: "b2", SessionID: "s1", Timestamp: time.Now().Add(2 * time.Millisecond).UTC(),
-		ParentIDs: []ID{"root"},
-		Message:   Message{Assistant: &AssistantMessage{}}}
+		Edges:   []EdgeRef{{Kind: EdgeKindParent, NodeID: "root"}},
+		Message: Message{Assistant: &AssistantMessage{}}}
 
 	// Provide in reversed/shuffled order to test topo sort
 	g, err := RestoreFromNodes(sess, []Node{b2, b1, root}, "b2", SessionStatusOpen, "", "")
@@ -699,14 +562,198 @@ func TestRestoreFromNodesCycleDetected(t *testing.T) {
 	sess := Session{ID: "s1", Timestamp: time.Now().UTC()}
 	// n1 -> n2 -> n1 (cycle)
 	n1 := Node{ID: "n1", SessionID: "s1", Timestamp: time.Now().UTC(),
-		ParentIDs: []ID{"n2"},
-		Message:   Message{System: &SystemMessage{Text: "sys"}}}
+		Edges:   []EdgeRef{{Kind: EdgeKindParent, NodeID: "n2"}},
+		Message: Message{System: &SystemMessage{Text: "sys"}}}
 	n2 := Node{ID: "n2", SessionID: "s1", Timestamp: time.Now().Add(time.Millisecond).UTC(),
-		ParentIDs: []ID{"n1"},
-		Message:   Message{System: &SystemMessage{Text: "sys"}}}
+		Edges:   []EdgeRef{{Kind: EdgeKindParent, NodeID: "n1"}},
+		Message: Message{System: &SystemMessage{Text: "sys"}}}
 
 	_, err := RestoreFromNodes(sess, []Node{n1, n2}, "n2", SessionStatusOpen, "", "")
 	if err == nil {
 		t.Fatal("expected error for cycle, got nil")
+	}
+}
+
+func TestTopoSortBranchFrom(t *testing.T) {
+	t.Parallel()
+
+	root := Node{ID: "root", SessionID: "s1", Timestamp: time.Now().UTC(),
+		Message: Message{System: &SystemMessage{Text: "sys"}}}
+	branch := Node{ID: "branch", SessionID: "s1", Timestamp: time.Now().Add(time.Millisecond).UTC(),
+		Edges:   []EdgeRef{{Kind: EdgeKindBranchFrom, NodeID: "root"}},
+		Message: Message{User: &UserMessage{}}}
+
+	nodeMap := map[ID]Node{"root": root, "branch": branch}
+	sorted, err := topoSortNodes(nodeMap)
+	if err != nil {
+		t.Fatalf("topoSortNodes: %v", err)
+	}
+	if len(sorted) != 2 || sorted[0].ID != "root" || sorted[1].ID != "branch" {
+		t.Fatalf("expected [root branch], got %v", sorted)
+	}
+}
+
+// --- SynthesizeEvents ---
+
+func TestSynthesizeEventsOpenGraph(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph(WithIDGenerator(sequenceIDs("s1", "n1", "n2")))
+	mustStart(t, g)
+	mustAppend(t, g, Message{System: &SystemMessage{Text: "sys"}})
+	mustAppend(t, g, Message{User: &UserMessage{}}, "n1")
+
+	events := SynthesizeEvents(g)
+
+	// start + 2 node events, no end event
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events for open graph, got %d", len(events))
+	}
+	if events[0].Kind != EventKindSessionStart {
+		t.Fatalf("expected first event to be SessionStart, got %v", events[0].Kind)
+	}
+	if events[1].Kind != EventKindNodeAppended || events[2].Kind != EventKindNodeAppended {
+		t.Fatalf("expected two NodeAppended events, got %v %v", events[1].Kind, events[2].Kind)
+	}
+	// No end event
+	for _, e := range events {
+		if e.Kind == EventKindSessionEnded {
+			t.Fatal("expected no SessionEnded event for open graph")
+		}
+	}
+}
+
+func TestSynthesizeEventsClosedGraph(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph(WithIDGenerator(sequenceIDs("s1", "n1")))
+	mustStart(t, g)
+	mustAppend(t, g, Message{System: &SystemMessage{Text: "sys"}})
+	if _, err := g.End(EndReasonComplete); err != nil {
+		t.Fatalf("End: %v", err)
+	}
+
+	events := SynthesizeEvents(g)
+
+	// start + node + end
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events for closed graph, got %d", len(events))
+	}
+	last := events[len(events)-1]
+	if last.Kind != EventKindSessionEnded {
+		t.Fatalf("expected last event to be SessionEnded, got %v", last.Kind)
+	}
+	if last.Reason != EndReasonComplete {
+		t.Fatalf("expected reason %q, got %q", EndReasonComplete, last.Reason)
+	}
+}
+
+func TestSynthesizeEventsEmptyGraph(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph(WithIDGenerator(sequenceIDs("s1")))
+	mustStart(t, g)
+	if _, err := g.End(EndReasonFailed); err != nil {
+		t.Fatalf("End: %v", err)
+	}
+
+	events := SynthesizeEvents(g)
+
+	// start + end only
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events for empty closed graph, got %d", len(events))
+	}
+	if events[0].Kind != EventKindSessionStart {
+		t.Fatalf("expected SessionStart, got %v", events[0].Kind)
+	}
+	if events[1].Kind != EventKindSessionEnded {
+		t.Fatalf("expected SessionEnded, got %v", events[1].Kind)
+	}
+}
+
+func TestSynthesizeEventsCustomEventNames(t *testing.T) {
+	t.Parallel()
+
+	custom := EventNames{
+		SessionStart: "sgp.session.started",
+		NodeAppended: "sgp.node.appended",
+		SessionEnded: "sgp.session.ended",
+	}
+	g := NewGraph(WithIDGenerator(sequenceIDs("s1", "n1")), WithEventNames(custom))
+	mustStart(t, g)
+	mustAppend(t, g, Message{System: &SystemMessage{Text: "sys"}})
+
+	events := SynthesizeEvents(g)
+
+	if events[0].Event != custom.SessionStart {
+		t.Fatalf("expected %q, got %q", custom.SessionStart, events[0].Event)
+	}
+	if events[1].Event != custom.NodeAppended {
+		t.Fatalf("expected %q, got %q", custom.NodeAppended, events[1].Event)
+	}
+}
+
+// --- applyNodeEvent error paths via RestoreFromEvents ---
+
+func TestApplyNodeEventNilNode(t *testing.T) {
+	t.Parallel()
+
+	startEvent := Event{
+		Event:     DefaultEventNames().SessionStart,
+		SessionID: "s1",
+	}
+	// NodeAppended event with nil Node
+	nilNodeEvent := Event{
+		Event: DefaultEventNames().NodeAppended,
+		Node:  nil,
+	}
+
+	_, err := RestoreFromEvents([]Event{startEvent, nilNodeEvent})
+	if err == nil {
+		t.Fatal("expected error for nil Node in NodeAppended event, got nil")
+	}
+}
+
+func TestApplyNodeEventEmptyNodeID(t *testing.T) {
+	t.Parallel()
+
+	startEvent := Event{
+		Event:     DefaultEventNames().SessionStart,
+		SessionID: "s1",
+	}
+	emptyIDEvent := Event{
+		Event: DefaultEventNames().NodeAppended,
+		Node: &Node{
+			ID:        "",
+			SessionID: "s1",
+			Message:   Message{System: &SystemMessage{Text: "sys"}},
+		},
+	}
+
+	_, err := RestoreFromEvents([]Event{startEvent, emptyIDEvent})
+	if err == nil {
+		t.Fatal("expected error for empty node ID in NodeAppended event, got nil")
+	}
+}
+
+func TestApplyNodeEventSessionIDMismatch(t *testing.T) {
+	t.Parallel()
+
+	startEvent := Event{
+		Event:     DefaultEventNames().SessionStart,
+		SessionID: "s1",
+	}
+	mismatchEvent := Event{
+		Event: DefaultEventNames().NodeAppended,
+		Node: &Node{
+			ID:        "n1",
+			SessionID: "wrong-session",
+			Message:   Message{System: &SystemMessage{Text: "sys"}},
+		},
+	}
+
+	_, err := RestoreFromEvents([]Event{startEvent, mismatchEvent})
+	if err == nil {
+		t.Fatal("expected error for session ID mismatch in NodeAppended event, got nil")
 	}
 }

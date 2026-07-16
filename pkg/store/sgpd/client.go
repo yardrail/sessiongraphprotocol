@@ -67,21 +67,13 @@ func (c *Client) CreateSession(ctx context.Context, sess sgp.Session) error {
 	return err
 }
 
-// WriteNode synthesizes a node.appended or history.rewritten event and calls AppendEvent RPC.
+// WriteNode synthesizes a node.appended event and calls AppendEvent RPC.
 func (c *Client) WriteNode(ctx context.Context, node sgp.Node) error {
-	kind := sgp.EventKindNodeAppended
-	eventName := sgp.DefaultEventNames().NodeAppended
-
-	if len(node.SynthesizedFrom) > 0 {
-		kind = sgp.EventKindHistoryRewritten
-		eventName = sgp.DefaultEventNames().HistoryRewritten
-	}
-
 	n := node
 
 	event := sgp.Event{
-		Kind:      kind,
-		Event:     eventName,
+		Kind:      sgp.EventKindNodeAppended,
+		Event:     sgp.DefaultEventNames().NodeAppended,
 		SessionID: node.SessionID,
 		Timestamp: node.Timestamp,
 		Node:      &n,

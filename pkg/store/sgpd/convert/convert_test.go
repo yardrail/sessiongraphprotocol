@@ -4,8 +4,10 @@ import (
 	"testing"
 	"time"
 
+	sgpv1 "github.com/restrukt-ai/sessiongraphprotocol/gen/sgp/v1"
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/sgp"
 	"github.com/restrukt-ai/sessiongraphprotocol/pkg/store/sgpd/convert"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func sessionEventCases(ts time.Time) []sgp.Event {
@@ -68,7 +70,7 @@ func nodeEventCases(ts time.Time) []sgp.Event {
 				ID:        "node-2",
 				SessionID: "sess-1",
 				Timestamp: ts,
-				ParentIDs: []sgp.ID{"node-1"},
+				Edges:     []sgp.EdgeRef{{Kind: sgp.EdgeKindParent, NodeID: "node-1"}},
 				Message: sgp.Message{User: &sgp.UserMessage{
 					Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: "what is 2+2?"}}},
 				}},
@@ -83,7 +85,7 @@ func nodeEventCases(ts time.Time) []sgp.Event {
 				ID:        "node-3",
 				SessionID: "sess-1",
 				Timestamp: ts,
-				ParentIDs: []sgp.ID{"node-2"},
+				Edges:     []sgp.EdgeRef{{Kind: sgp.EdgeKindParent, NodeID: "node-2"}},
 				Message: sgp.Message{Assistant: &sgp.AssistantMessage{
 					Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: "4"}}},
 					ToolCalls: []sgp.ToolCall{
@@ -101,7 +103,7 @@ func nodeEventCases(ts time.Time) []sgp.Event {
 				ID:        "node-4",
 				SessionID: "sess-1",
 				Timestamp: ts,
-				ParentIDs: []sgp.ID{"node-3"},
+				Edges:     []sgp.EdgeRef{{Kind: sgp.EdgeKindParent, NodeID: "node-3"}},
 				Message: sgp.Message{Tool: &sgp.ToolMessage{
 					ToolCallID: "tc-1",
 					Name:       "calc",
@@ -109,21 +111,7 @@ func nodeEventCases(ts time.Time) []sgp.Event {
 				}},
 			},
 		},
-		{
-			Kind:      sgp.EventKindHistoryRewritten,
-			Event:     "history.rewritten",
-			SessionID: "sess-1",
-			Timestamp: ts,
-			Node: &sgp.Node{
-				ID:              "node-5",
-				SessionID:       "sess-1",
-				Timestamp:       ts,
-				ParentIDs:       []sgp.ID{"node-1"},
-				SynthesizedFrom: []sgp.ID{"node-2", "node-3", "node-4"},
-				Message:         sgp.Message{Assistant: &sgp.AssistantMessage{Refusal: "refused"}},
-			},
-		},
-	}
+		}
 }
 
 func TestEventRoundTrip(t *testing.T) {
@@ -212,11 +200,13 @@ func TestNodeRoundTrip(t *testing.T) {
 
 	ts := time.Now().UTC().Truncate(time.Millisecond)
 	original := sgp.Node{
-		ID:              "node-x",
-		SessionID:       "sess-x",
-		Timestamp:       ts,
-		ParentIDs:       []sgp.ID{"p1", "p2"},
-		SynthesizedFrom: []sgp.ID{"s1"},
+		ID:        "node-x",
+		SessionID: "sess-x",
+		Timestamp: ts,
+		Edges: []sgp.EdgeRef{
+			{Kind: sgp.EdgeKindParent, NodeID: "p1"},
+			{Kind: sgp.EdgeKindParent, NodeID: "p2"},
+		},
 		Message: sgp.Message{User: &sgp.UserMessage{
 			Parts: []sgp.ContentPart{
 				{Text: &sgp.TextPart{Text: "hi"}},
@@ -300,19 +290,213 @@ func assertNodeEqual(t *testing.T, want, got sgp.Node) {
 		t.Errorf("Node.Timestamp: got %v want %v", got.Timestamp, want.Timestamp)
 	}
 
-	if len(got.ParentIDs) != len(want.ParentIDs) {
-		t.Errorf("Node.ParentIDs len: got %d want %d", len(got.ParentIDs), len(want.ParentIDs))
-	}
-
-	if len(got.SynthesizedFrom) != len(want.SynthesizedFrom) {
-		t.Errorf(
-			"Node.SynthesizedFrom len: got %d want %d",
-			len(got.SynthesizedFrom),
-			len(want.SynthesizedFrom),
-		)
+	if len(got.Parents()) != len(want.Parents()) {
+		t.Errorf("Node.Parents len: got %d want %d", len(got.Parents()), len(want.Parents()))
 	}
 
 	if got.Message.Role() != want.Message.Role() {
 		t.Errorf("Node.Message.Role: got %q want %q", got.Message.Role(), want.Message.Role())
+	}
+}
+
+// TestEventFromProtoNil covers the nil branch of EventFromProto.
+func TestEventFromProtoNil(t *testing.T) {
+	t.Parallel()
+
+	got := convert.EventFromProto(nil)
+	if got.Event != "" || got.SessionID != "" {
+		t.Errorf("expected zero Event, got %+v", got)
+	}
+}
+
+// TestNodeFromProtoNil covers the nil branch of NodeFromProto.
+func TestNodeFromProtoNil(t *testing.T) {
+	t.Parallel()
+
+	got := convert.NodeFromProto(nil)
+	if got.ID != "" || got.SessionID != "" {
+		t.Errorf("expected zero Node, got %+v", got)
+	}
+}
+
+// TestMessageFromProtoNil covers the nil branch of MessageFromProto.
+func TestMessageFromProtoNil(t *testing.T) {
+	t.Parallel()
+
+	got := convert.MessageFromProto(nil)
+	if got.System != nil || got.User != nil || got.Assistant != nil || got.Tool != nil {
+		t.Errorf("expected zero Message, got %+v", got)
+	}
+}
+
+// TestSessionFromProtoNil covers the nil branch of SessionFromProto.
+func TestSessionFromProtoNil(t *testing.T) {
+	t.Parallel()
+
+	got := convert.SessionFromProto(nil)
+	if got.ID != "" {
+		t.Errorf("expected zero Session, got %+v", got)
+	}
+}
+
+// TestMessageToProtoDefaultBranch covers the default (zero) branch of MessageToProto.
+func TestMessageToProtoDefaultBranch(t *testing.T) {
+	t.Parallel()
+
+	got := convert.MessageToProto(sgp.Message{})
+	if got != nil {
+		t.Errorf("expected nil proto for zero Message, got %+v", got)
+	}
+}
+
+// TestContentPartsToProtoEmpty covers the empty-slice branch of contentPartsToProto
+// via NodeToProto with a zero Message (no parts).
+func TestContentPartsToProtoEmpty(t *testing.T) {
+	t.Parallel()
+
+	n := sgp.Node{
+		ID:        "n1",
+		SessionID: "s1",
+		Message:   sgp.Message{User: &sgp.UserMessage{Parts: nil}},
+	}
+	pb := convert.NodeToProto(n)
+	if pb == nil {
+		t.Fatal("expected non-nil proto Node")
+	}
+	// Message should have user with nil parts — round-trip check
+	got := convert.NodeFromProto(pb)
+	if got.Message.User == nil {
+		t.Fatal("expected User message after round-trip")
+	}
+	if got.Message.User.Parts != nil {
+		t.Errorf("expected nil parts, got %v", got.Message.User.Parts)
+	}
+}
+
+// TestTimeFromProtoNil covers the nil branch of TimeFromProto.
+func TestTimeFromProtoNil(t *testing.T) {
+	t.Parallel()
+
+	got := convert.TimeFromProto(nil)
+	if !got.IsZero() {
+		t.Errorf("expected zero time, got %v", got)
+	}
+}
+
+// TestTimeFromProtoNonNil covers the non-nil branch of TimeFromProto.
+func TestTimeFromProtoNonNil(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	ts := timestamppb.New(now)
+	got := convert.TimeFromProto(ts)
+	if got.IsZero() {
+		t.Error("expected non-zero time")
+	}
+}
+
+// TestContentPartsFromProtoNil covers the nil-slice branch of contentPartsFromProto
+// by calling MessageFromProto with a User message that has no parts.
+func TestContentPartsFromProtoNil(t *testing.T) {
+	t.Parallel()
+
+	pb := &sgpv1.Message{Message: &sgpv1.Message_User{
+		User: &sgpv1.UserMessage{Parts: nil},
+	}}
+	got := convert.MessageFromProto(pb)
+	if got.User == nil {
+		t.Fatal("expected User message")
+	}
+	if got.User.Parts != nil {
+		t.Errorf("expected nil parts, got %v", got.User.Parts)
+	}
+}
+
+// TestContentPartsFromProtoEmpty covers the empty-slice branch of contentPartsFromProto.
+func TestContentPartsFromProtoEmpty(t *testing.T) {
+	t.Parallel()
+
+	pb := &sgpv1.Message{Message: &sgpv1.Message_User{
+		User: &sgpv1.UserMessage{Parts: []*sgpv1.ContentPart{}},
+	}}
+	got := convert.MessageFromProto(pb)
+	if got.User == nil {
+		t.Fatal("expected User message")
+	}
+	if got.User.Parts != nil {
+		t.Errorf("expected nil parts, got %v", got.User.Parts)
+	}
+}
+
+// TestContentPartFromProtoNil covers the nil branch of contentPartFromProto
+// by including a nil element in the parts slice.
+func TestContentPartFromProtoNil(t *testing.T) {
+	t.Parallel()
+
+	pb := &sgpv1.Message{Message: &sgpv1.Message_User{
+		User: &sgpv1.UserMessage{Parts: []*sgpv1.ContentPart{nil}},
+	}}
+	got := convert.MessageFromProto(pb)
+	if got.User == nil {
+		t.Fatal("expected User message")
+	}
+	if len(got.User.Parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(got.User.Parts))
+	}
+	// nil ContentPart should produce empty ContentPart
+	p := got.User.Parts[0]
+	if p.Text != nil || p.Image != nil || p.Audio != nil || p.Video != nil || p.File != nil {
+		t.Errorf("expected empty ContentPart, got %+v", p)
+	}
+}
+
+// TestBlobFromProtoNil covers the nil branch of blobFromProto by providing an
+// ImagePart with no blob set, so GetBlob() returns nil.
+func TestBlobFromProtoNil(t *testing.T) {
+	t.Parallel()
+
+	pb := &sgpv1.Message{Message: &sgpv1.Message_User{
+		User: &sgpv1.UserMessage{Parts: []*sgpv1.ContentPart{
+			{Part: &sgpv1.ContentPart_Image{Image: &sgpv1.ImagePart{Blob: nil}}},
+		}},
+	}}
+	got := convert.MessageFromProto(pb)
+	if got.User == nil {
+		t.Fatal("expected User message")
+	}
+	if len(got.User.Parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(got.User.Parts))
+	}
+	p := got.User.Parts[0]
+	if p.Image == nil {
+		t.Fatal("expected Image part")
+	}
+	// nil blob → zero BlobPart
+	if p.Image.BlobPart.MimeType != "" || p.Image.BlobPart.Data != nil {
+		t.Errorf("expected zero BlobPart, got %+v", p.Image.BlobPart)
+	}
+}
+
+// TestToolCallFromProtoNil covers the nil branch of toolCallFromProto by
+// including a nil element in the ToolCalls slice.
+func TestToolCallFromProtoNil(t *testing.T) {
+	t.Parallel()
+
+	pb := &sgpv1.Message{Message: &sgpv1.Message_Assistant{
+		Assistant: &sgpv1.AssistantMessage{
+			ToolCalls: []*sgpv1.ToolCall{nil},
+		},
+	}}
+	got := convert.MessageFromProto(pb)
+	if got.Assistant == nil {
+		t.Fatal("expected Assistant message")
+	}
+	if len(got.Assistant.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(got.Assistant.ToolCalls))
+	}
+	// nil ToolCall → zero ToolCall
+	tc := got.Assistant.ToolCalls[0]
+	if tc.ID != "" || tc.Name != "" || tc.Arguments != "" {
+		t.Errorf("expected zero ToolCall, got %+v", tc)
 	}
 }

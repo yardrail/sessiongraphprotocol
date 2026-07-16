@@ -68,12 +68,8 @@ func NodeToProto(n sgp.Node) *sgpv1.Node {
 		Timestamp: timestamppb.New(n.Timestamp),
 		Message:   MessageToProto(n.Message),
 	}
-	for _, id := range n.ParentIDs {
+	for _, id := range n.Parents() {
 		pb.ParentIds = append(pb.ParentIds, string(id))
-	}
-
-	for _, id := range n.SynthesizedFrom {
-		pb.SynthesizedFrom = append(pb.SynthesizedFrom, string(id))
 	}
 
 	return pb
@@ -95,11 +91,7 @@ func NodeFromProto(pb *sgpv1.Node) sgp.Node {
 	}
 
 	for _, id := range pb.GetParentIds() {
-		n.ParentIDs = append(n.ParentIDs, sgp.ID(id))
-	}
-
-	for _, id := range pb.GetSynthesizedFrom() {
-		n.SynthesizedFrom = append(n.SynthesizedFrom, sgp.ID(id))
+		n.Edges = append(n.Edges, sgp.EdgeRef{Kind: sgp.EdgeKindParent, NodeID: sgp.ID(id)})
 	}
 
 	return n

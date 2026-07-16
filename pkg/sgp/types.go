@@ -170,14 +170,123 @@ func (m Message) valid() bool {
 	return count == 1
 }
 
+// NodeKind identifies the semantic type of a session graph node.
+type NodeKind string
+
+const (
+	// NodeKindExperience is the default kind — a live inference turn.
+	NodeKindExperience NodeKind = "experience"
+	// NodeKindMemory is a distilled semantic memory node.
+	NodeKindMemory NodeKind = "memory"
+	// NodeKindSkill is a learned procedural skill node.
+	NodeKindSkill NodeKind = "skill"
+	// NodeKindIdentity is a persistent agent identity node.
+	NodeKindIdentity NodeKind = "identity"
+	// NodeKindSleep marks a sleep cycle boundary.
+	NodeKindSleep NodeKind = "sleep"
+)
+
+// EdgeKind identifies the semantic relationship between two nodes.
+type EdgeKind string
+
+const (
+	// EdgeKindParent is the default parent-child ordering edge.
+	EdgeKindParent EdgeKind = "parent"
+	// EdgeKindDistilledFrom links a memory node to the experience nodes it summarises.
+	EdgeKindDistilledFrom EdgeKind = "distilled_from"
+	// EdgeKindAssociatedWith is a weighted semantic association between memory nodes.
+	EdgeKindAssociatedWith EdgeKind = "associated_with"
+	// EdgeKindRecalledIn links a memory node to the experience node that recalled it.
+	EdgeKindRecalledIn EdgeKind = "recalled_in"
+	// EdgeKindEvolvedFrom links an updated node to its predecessor.
+	EdgeKindEvolvedFrom EdgeKind = "evolved_from"
+	// EdgeKindProceduralOf links a skill node to the memory or experience that produced it.
+	EdgeKindProceduralOf EdgeKind = "procedural_of"
+	// EdgeKindArchives links a sleep node to the experience nodes it archives.
+	EdgeKindArchives EdgeKind = "archives"
+	// EdgeKindBranchFrom marks a node that begins a deliberate branch of the session
+	// (e.g. a sub-agent fork). The node links to its origin via this edge instead of
+	// EdgeKindParent, so it does not appear in the children map and AdvanceHead skips it.
+	EdgeKindBranchFrom EdgeKind = "branch_from"
+)
+
+// EdgeRef is a typed, optionally weighted reference from one node to another.
+type EdgeRef struct {
+	Kind   EdgeKind `json:"kind"`
+	NodeID ID       `json:"node_id"`
+	Weight float64  `json:"weight,omitempty"` // 0 = unweighted
+}
+
+// MemoryContent holds the structured payload of a NodeKindMemory node.
+type MemoryContent struct {
+	Summary    string   `json:"summary"`
+	Tags       []string `json:"tags,omitempty"`
+	Importance float64  `json:"importance"`
+}
+
+// SkillContent holds the structured payload of a NodeKindSkill node.
+type SkillContent struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Procedure   string `json:"procedure"`
+}
+
+// SleepKind identifies the depth of a sleep cycle.
+type SleepKind string
+
+const (
+	// SleepKindLight is a light-sleep cycle that distils experiences into memories.
+	SleepKindLight SleepKind = "light"
+	// SleepKindREM is a REM sleep cycle that forms weighted associations between memories.
+	SleepKindREM SleepKind = "rem"
+)
+
+// SleepContent holds the structured payload of a NodeKindSleep node.
+type SleepContent struct {
+	Kind SleepKind `json:"kind"`
+}
+
+// IdentityContent holds the structured payload of a NodeKindIdentity node.
+type IdentityContent struct {
+	Traits []string `json:"traits,omitempty"`
+	Values []string `json:"values,omitempty"`
+	Goals  []string `json:"goals,omitempty"`
+}
+
 // Node is an immutable session graph node.
 type Node struct {
 	ID              ID        `json:"id"`
 	SessionID       ID        `json:"session_id"`
 	Timestamp       time.Time `json:"timestamp"`
-	ParentIDs       []ID      `json:"parent_ids"`
-	SynthesizedFrom []ID      `json:"synthesized_from,omitempty"`
 	Message         Message   `json:"message"`
+	// new fields
+	Kind     NodeKind  `json:"kind,omitempty"`
+	Edges    []EdgeRef `json:"edges,omitempty"`
+	Archived bool      `json:"archived,omitempty"`
+	// content (at most one non-nil)
+	Memory   *MemoryContent   `json:"memory,omitempty"`
+	Skill    *SkillContent    `json:"skill,omitempty"`
+	Identity *IdentityContent `json:"identity,omitempty"`
+	Sleep    *SleepContent    `json:"sleep,omitempty"`
+}
+
+// Parents returns parent node IDs from Edges.
+func (n Node) Parents() []ID {
+	var ids []ID
+	for _, e := range n.Edges {
+		if e.Kind == EdgeKindParent {
+			ids = append(ids, e.NodeID)
+		}
+	}
+	return ids
+}
+
+// EffectiveKind returns NodeKindExperience if Kind is empty (backward compat).
+func (n Node) EffectiveKind() NodeKind {
+	if n.Kind == "" {
+		return NodeKindExperience
+	}
+	return n.Kind
 }
 
 // SpawnReference points to the parent session and node that created a subagent session.
@@ -201,8 +310,6 @@ const (
 	EventKindSessionStart EventKind = iota + 1
 	// EventKindNodeAppended is emitted when a node is appended.
 	EventKindNodeAppended
-	// EventKindHistoryRewritten is emitted when a rewrite node is appended.
-	EventKindHistoryRewritten
 	// EventKindSessionEnded is emitted when a session ends.
 	EventKindSessionEnded
 )
@@ -230,19 +337,17 @@ const (
 
 // EventNames maps stable event kinds to emitted event strings.
 type EventNames struct {
-	SessionStart     string
-	NodeAppended     string
-	HistoryRewritten string
-	SessionEnded     string
+	SessionStart string
+	NodeAppended string
+	SessionEnded string
 }
 
 // DefaultEventNames returns the spec-defined event names.
 func DefaultEventNames() EventNames {
 	return EventNames{
-		SessionStart:     "session.start",
-		NodeAppended:     "node.appended",
-		HistoryRewritten: "history.rewritten",
-		SessionEnded:     "session.ended",
+		SessionStart: "session.start",
+		NodeAppended: "node.appended",
+		SessionEnded: "session.ended",
 	}
 }
 
@@ -253,8 +358,6 @@ func (names EventNames) Name(kind EventKind) string {
 		return names.SessionStart
 	case EventKindNodeAppended:
 		return names.NodeAppended
-	case EventKindHistoryRewritten:
-		return names.HistoryRewritten
 	case EventKindSessionEnded:
 		return names.SessionEnded
 	default:

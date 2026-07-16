@@ -3,6 +3,7 @@ package cayleystore
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/cayleygraph/cayley/graph"
@@ -15,15 +16,26 @@ const (
 	predSession            = "sgp:session"
 	predTimestamp          = "sgp:timestamp"
 	predMessageJSON        = "sgp:message_json"
-	predParent             = "sgp:parent"
-	predSynthesizedFrom    = "sgp:synthesized_from"
-	predStatus             = "sgp:status"
+	predStatus  = "sgp:status"
 	predHead               = "sgp:head"
 	predEndReason          = "sgp:end_reason"
 	predEndNode            = "sgp:end_node"
 	predSpawnedFromSession = "sgp:spawned_from_session"
 	predSpawnedFromNode    = "sgp:spawned_from_node"
 	predMember             = "sgp:member"
+	// typed node predicates
+	predNodeKind           = "sgp:node_kind"
+	predArchived           = "sgp:archived"
+	predContentJSON        = "sgp:content_json"
+	predEdgeParent         = "sgp:edge_parent"
+	predEdgeDistilledFrom  = "sgp:edge_distilled_from"
+	predEdgeAssociatedWith = "sgp:edge_associated_with"
+	predEdgeRecalledIn     = "sgp:edge_recalled_in"
+	predEdgeEvolvedFrom    = "sgp:edge_evolved_from"
+	predEdgeProceduralOf   = "sgp:edge_procedural_of"
+	predEdgeArchives       = "sgp:edge_archives"
+	predEdgeBranchFrom     = "sgp:edge_branch_from"
+	predEdgeWeight         = "sgp:edge_weight"
 
 	globalSessions = "sgp:sessions"
 	globalLabel    = "sgp:global"
@@ -31,6 +43,35 @@ const (
 	statusOpen   = "open"
 	statusClosed = "closed"
 )
+
+// edgeKindToPred maps an EdgeKind to its quad predicate string.
+func edgeKindToPred(kind sgp.EdgeKind) string {
+	switch kind {
+	case sgp.EdgeKindParent:
+		return predEdgeParent
+	case sgp.EdgeKindDistilledFrom:
+		return predEdgeDistilledFrom
+	case sgp.EdgeKindAssociatedWith:
+		return predEdgeAssociatedWith
+	case sgp.EdgeKindRecalledIn:
+		return predEdgeRecalledIn
+	case sgp.EdgeKindEvolvedFrom:
+		return predEdgeEvolvedFrom
+	case sgp.EdgeKindProceduralOf:
+		return predEdgeProceduralOf
+	case sgp.EdgeKindArchives:
+		return predEdgeArchives
+	case sgp.EdgeKindBranchFrom:
+		return predEdgeBranchFrom
+	default:
+		return ""
+	}
+}
+
+// isWeightedEdge reports whether an edge kind uses reified weighted storage.
+func isWeightedEdge(kind sgp.EdgeKind) bool {
+	return kind == sgp.EdgeKindAssociatedWith || kind == sgp.EdgeKindRecalledIn
+}
 
 // nodeToDeltas returns Add deltas for all quads representing node.
 func nodeToDeltas(node sgp.Node) []graph.Delta {
@@ -45,14 +86,60 @@ func nodeToDeltas(node sgp.Node) []graph.Delta {
 		addDelta(subj, predMessageJSON, quad.String(string(msgJSON)), label),
 	}
 
-	for _, pid := range node.ParentIDs {
-		deltas = append(deltas, addDelta(subj, predParent, quad.IRI(string(pid)), label))
+	// Write node kind if set.
+	if node.Kind != "" {
+		deltas = append(deltas, addDelta(subj, predNodeKind, quad.String(string(node.Kind)), label))
 	}
-	for _, sid := range node.SynthesizedFrom {
-		deltas = append(deltas, addDelta(subj, predSynthesizedFrom, quad.IRI(string(sid)), label))
+
+	// Write archived flag if set.
+	if node.Archived {
+		deltas = append(deltas, addDelta(subj, predArchived, quad.String("true"), label))
+	}
+
+	// Write content JSON if any content field is non-nil.
+	if contentJSON := marshalNodeContent(node); contentJSON != "" {
+		deltas = append(deltas, addDelta(subj, predContentJSON, quad.String(contentJSON), label))
+	}
+
+	// Write typed edges.
+	for _, e := range node.Edges {
+		pred := edgeKindToPred(e.Kind)
+		if pred == "" {
+			continue
+		}
+		if isWeightedEdge(e.Kind) && e.Weight != 0 {
+			// Reified weighted edge: store as edge IRI with weight quad.
+			edgeIRI := quad.IRI(fmt.Sprintf("edge:%s:%s:%s", node.ID, e.Kind, e.NodeID))
+			deltas = append(deltas,
+				addDelta(subj, pred, edgeIRI, label),
+				addDelta(edgeIRI, predEdgeWeight, quad.String(strconv.FormatFloat(e.Weight, 'f', -1, 64)), label),
+			)
+		} else {
+			deltas = append(deltas, addDelta(subj, pred, quad.IRI(string(e.NodeID)), label))
+		}
 	}
 
 	return deltas
+}
+
+// marshalNodeContent marshals whichever content field is non-nil.
+// Returns empty string if none are set.
+func marshalNodeContent(node sgp.Node) string {
+	var v interface{}
+	switch {
+	case node.Memory != nil:
+		v = node.Memory
+	case node.Skill != nil:
+		v = node.Skill
+	case node.Identity != nil:
+		v = node.Identity
+	case node.Sleep != nil:
+		v = node.Sleep
+	default:
+		return ""
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 // sessionToDeltas returns Add deltas for session metadata (status="open").

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cayleygraph/cayley/graph"
@@ -20,7 +22,7 @@ import (
 type Edge struct {
 	FromID sgp.ID
 	ToID   sgp.ID
-	Kind   string // "parent" | "synthesized_from"
+	Kind   string // edge kind as string (e.g., "parent", "distilled_from")
 }
 
 // Store implements sgp.Store and sgp.Watcher backed by a Cayley quad store.
@@ -155,22 +157,13 @@ func (s *Store) GetNode(ctx context.Context, nodeID sgp.ID) (sgp.Node, error) {
 
 	tsVals, _ := s.outValues(ctx, string(nodeID), predTimestamp)
 	msgVals, _ := s.outValues(ctx, string(nodeID), predMessageJSON)
-	parentVals, _ := s.outValues(ctx, string(nodeID), predParent)
-	synthVals, _ := s.outValues(ctx, string(nodeID), predSynthesizedFrom)
+	kindVals, _ := s.outValues(ctx, string(nodeID), predNodeKind)
+	archivedVals, _ := s.outValues(ctx, string(nodeID), predArchived)
+	contentVals, _ := s.outValues(ctx, string(nodeID), predContentJSON)
 
 	var msg sgp.Message
 	if len(msgVals) > 0 {
 		_ = json.Unmarshal([]byte(valToStr(msgVals[0])), &msg)
-	}
-
-	parentIDs := make([]sgp.ID, 0, len(parentVals))
-	for _, v := range parentVals {
-		parentIDs = append(parentIDs, sgp.ID(valToStr(v)))
-	}
-
-	synthFrom := make([]sgp.ID, 0, len(synthVals))
-	for _, v := range synthVals {
-		synthFrom = append(synthFrom, sgp.ID(valToStr(v)))
 	}
 
 	var ts time.Time
@@ -178,14 +171,100 @@ func (s *Store) GetNode(ctx context.Context, nodeID sgp.ID) (sgp.Node, error) {
 		ts = parseRFC3339(valToStr(tsVals[0]))
 	}
 
-	return sgp.Node{
-		ID:              nodeID,
-		SessionID:       sgp.ID(valToStr(sessVals[0])),
-		Timestamp:       ts,
-		ParentIDs:       parentIDs,
-		SynthesizedFrom: synthFrom,
-		Message:         msg,
-	}, nil
+	var kind sgp.NodeKind
+	if len(kindVals) > 0 {
+		kind = sgp.NodeKind(valToStr(kindVals[0]))
+	}
+
+	archived := len(archivedVals) > 0 && valToStr(archivedVals[0]) == "true"
+
+	edges, _ := s.reconstructEdges(ctx, nodeID)
+
+	node := sgp.Node{
+		ID:        nodeID,
+		SessionID: sgp.ID(valToStr(sessVals[0])),
+		Timestamp: ts,
+		Message:   msg,
+		Kind:      kind,
+		Archived:  archived,
+		Edges:     edges,
+	}
+
+	// Unmarshal content based on effective kind.
+	if len(contentVals) > 0 {
+		contentJSON := valToStr(contentVals[0])
+		switch node.EffectiveKind() {
+		case sgp.NodeKindMemory:
+			var m sgp.MemoryContent
+			if err := json.Unmarshal([]byte(contentJSON), &m); err == nil {
+				node.Memory = &m
+			}
+		case sgp.NodeKindSkill:
+			var sk sgp.SkillContent
+			if err := json.Unmarshal([]byte(contentJSON), &sk); err == nil {
+				node.Skill = &sk
+			}
+		case sgp.NodeKindIdentity:
+			var id sgp.IdentityContent
+			if err := json.Unmarshal([]byte(contentJSON), &id); err == nil {
+				node.Identity = &id
+			}
+		case sgp.NodeKindSleep:
+			var sl sgp.SleepContent
+			if err := json.Unmarshal([]byte(contentJSON), &sl); err == nil {
+				node.Sleep = &sl
+			}
+		}
+	}
+
+	return node, nil
+}
+
+// reconstructEdges reads all typed edges for a node from the quad store.
+func (s *Store) reconstructEdges(ctx context.Context, nodeID sgp.ID) ([]sgp.EdgeRef, error) {
+	type edgePred struct {
+		pred string
+		kind sgp.EdgeKind
+	}
+
+	allPreds := []edgePred{
+		{predEdgeParent, sgp.EdgeKindParent},
+		{predEdgeDistilledFrom, sgp.EdgeKindDistilledFrom},
+		{predEdgeAssociatedWith, sgp.EdgeKindAssociatedWith},
+		{predEdgeRecalledIn, sgp.EdgeKindRecalledIn},
+		{predEdgeEvolvedFrom, sgp.EdgeKindEvolvedFrom},
+		{predEdgeProceduralOf, sgp.EdgeKindProceduralOf},
+		{predEdgeArchives, sgp.EdgeKindArchives},
+		{predEdgeBranchFrom, sgp.EdgeKindBranchFrom},
+	}
+
+	var edges []sgp.EdgeRef
+
+	for _, ep := range allPreds {
+		vals, _ := s.outValues(ctx, string(nodeID), ep.pred)
+		for _, v := range vals {
+			raw := valToStr(v)
+			if strings.HasPrefix(raw, "edge:") {
+				// Reified weighted edge: parse "edge:{fromID}:{kind}:{toID}"
+				// Node IDs are UUIDs (no colons), kind strings have no colons.
+				parts := strings.SplitN(raw, ":", 4)
+				if len(parts) != 4 {
+					continue
+				}
+				targetID := sgp.ID(parts[3])
+				weightVals, _ := s.outValues(ctx, raw, predEdgeWeight)
+				var weight float64
+				if len(weightVals) > 0 {
+					weight, _ = strconv.ParseFloat(valToStr(weightVals[0]), 64)
+				}
+				edges = append(edges, sgp.EdgeRef{Kind: ep.kind, NodeID: targetID, Weight: weight})
+			} else {
+				edges = append(edges, sgp.EdgeRef{Kind: ep.kind, NodeID: sgp.ID(raw)})
+			}
+		}
+	}
+
+	return edges, nil
 }
 
 // GetLineage returns the canonical ancestor chain from root to nodeID (inclusive).
@@ -200,10 +279,11 @@ func (s *Store) GetLineage(ctx context.Context, nodeID sgp.ID) ([]sgp.Node, erro
 		}
 		lineage = append(lineage, node)
 
-		if len(node.ParentIDs) == 0 {
+		parents := node.Parents()
+		if len(parents) == 0 {
 			break
 		}
-		current = node.ParentIDs[0] // canonical (first) parent
+		current = parents[0] // canonical (first) parent
 	}
 
 	slices.Reverse(lineage)
@@ -304,11 +384,8 @@ func (s *Store) GetSessionGraph(ctx context.Context, sessionID sgp.ID) ([]sgp.No
 		}
 		nodes = append(nodes, node)
 
-		for _, pid := range node.ParentIDs {
-			edges = append(edges, Edge{FromID: pid, ToID: nodeID, Kind: "parent"})
-		}
-		for _, sid := range node.SynthesizedFrom {
-			edges = append(edges, Edge{FromID: sid, ToID: nodeID, Kind: "synthesized_from"})
+		for _, e := range node.Edges {
+			edges = append(edges, Edge{FromID: nodeID, ToID: e.NodeID, Kind: string(e.Kind)})
 		}
 	}
 
