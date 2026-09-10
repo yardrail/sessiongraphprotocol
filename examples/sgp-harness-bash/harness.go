@@ -20,7 +20,8 @@ type harness struct {
 	graph      *sgp.Graph
 	store      sgp.Store
 	headID     sgp.ID
-	ollamaURL  string
+	baseURL    string
+	apiKey     string
 	model      string
 	sessionDir string
 	toolsDesc  string
@@ -30,7 +31,7 @@ type harness struct {
 
 func newHarness(
 	store sgp.Store,
-	sessionDir, sessionID, ollamaURL, model, systemPrompt, toolsDesc, peersDesc string,
+	sessionDir, sessionID, baseURL, apiKey, model, systemPrompt, toolsDesc, peersDesc string,
 ) (*harness, sgp.ID, error) {
 	var graph *sgp.Graph
 	var headID sgp.ID
@@ -77,7 +78,8 @@ func newHarness(
 		graph:      graph,
 		store:      store,
 		headID:     headID,
-		ollamaURL:  ollamaURL,
+		baseURL:    baseURL,
+		apiKey:     apiKey,
 		model:      model,
 		sessionDir: sessionDir,
 		toolsDesc:  toolsDesc,
@@ -114,19 +116,22 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("resume nodes: %w", err)
 		}
 
-		resp, err := ollamaChat(
+		resp, err := chatCompletion(
 			ctx,
-			h.ollamaURL,
+			h.baseURL,
+			h.apiKey,
 			h.model,
-			toOllamaMessages(nodes),
+			toChatMessages(nodes),
 			toolDefinitions(),
 		)
 		if err != nil {
-			return "", fmt.Errorf("ollama chat: %w", err)
+			return "", fmt.Errorf("chat completion: %w", err)
 		}
 
-		if len(resp.Message.ToolCalls) == 0 {
-			text := resp.Message.Content
+		message := resp.Choices[0].Message
+
+		if len(message.ToolCalls) == 0 {
+			text := message.Content
 			assistNode, _, appendErr := h.graph.Append(
 				sgp.Message{Assistant: &sgp.AssistantMessage{
 					Parts: []sgp.ContentPart{{Text: &sgp.TextPart{Text: text}}},
@@ -147,14 +152,18 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 		}
 
 		h.callSeq++
-		toolCalls := make([]sgp.ToolCall, len(resp.Message.ToolCalls))
+		toolCalls := make([]sgp.ToolCall, len(message.ToolCalls))
 
-		for i, tc := range resp.Message.ToolCalls {
-			argsBytes, _ := json.Marshal(tc.Function.Arguments)
+		for i, tc := range message.ToolCalls {
+			id := tc.ID
+			if id == "" {
+				id = fmt.Sprintf("tc-%d-%d", h.callSeq, i)
+			}
+
 			toolCalls[i] = sgp.ToolCall{
-				ID:        fmt.Sprintf("tc-%d-%d", h.callSeq, i),
+				ID:        id,
 				Name:      tc.Function.Name,
-				Arguments: string(argsBytes),
+				Arguments: tc.Function.Arguments,
 			}
 		}
 
@@ -171,8 +180,8 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 		// Intercept teleport before executing any tools.
 		teleportIdx := -1
 
-		for i, tc := range resp.Message.ToolCalls {
-			if tc.Function.Name == "teleport" {
+		for i, tc := range toolCalls {
+			if tc.Name == "teleport" {
 				teleportIdx = i
 				break
 			}
@@ -183,16 +192,15 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 				return "", err
 			}
 
-			tc := resp.Message.ToolCalls[teleportIdx]
-			argsBytes, _ := json.Marshal(tc.Function.Arguments)
+			tc := toolCalls[teleportIdx]
 			var args map[string]any
-			_ = json.Unmarshal(argsBytes, &args)
+			_ = json.Unmarshal([]byte(tc.Arguments), &args)
 			spawnErr := h.spawnHandoff(args)
 
 			if spawnErr != nil {
 				resultNode, _, appendErr := h.graph.Append(
 					sgp.Message{Tool: &sgp.ToolMessage{
-						ToolCallID: fmt.Sprintf("tc-%d-%d", h.callSeq, teleportIdx),
+						ToolCallID: tc.ID,
 						Name:       "teleport",
 						Parts: []sgp.ContentPart{
 							{Text: &sgp.TextPart{Text: spawnErr.Error()}},
@@ -221,13 +229,12 @@ func (h *harness) runInferenceLoop(ctx context.Context) (string, error) {
 			return "", err
 		}
 
-		for i, tc := range resp.Message.ToolCalls {
-			argsBytes, _ := json.Marshal(tc.Function.Arguments)
-			output, success := executeTool(ctx, tc.Function.Name, string(argsBytes))
+		for _, tc := range toolCalls {
+			output, success := executeTool(ctx, tc.Name, tc.Arguments)
 			resultNode, _, appendErr := h.graph.Append(
 				sgp.Message{Tool: &sgp.ToolMessage{
-					ToolCallID: fmt.Sprintf("tc-%d-%d", h.callSeq, i),
-					Name:       tc.Function.Name,
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
 					Parts:      []sgp.ContentPart{{Text: &sgp.TextPart{Text: output}}},
 					IsError:    !success,
 				}},
@@ -257,12 +264,14 @@ func (h *harness) spawnHandoff(args map[string]any) error {
 	cmd := exec.Command(dest,
 		"--session-id", string(h.graph.Session().ID),
 		"--model", h.model,
-		"--ollama-url", h.ollamaURL,
+		"--base-url", h.baseURL,
 		"--session-dir", h.sessionDir,
 	)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// The API key is inherited via the environment (OPENAI_API_KEY), not
+	// passed on argv, so it doesn't leak into the process list.
 
 	return cmd.Start()
 }
@@ -333,8 +342,8 @@ func (h *harness) close(ctx context.Context) {
 	_ = h.store.EndSession(ctx, h.graph.Session().ID, endEvt.Reason, endEvt.TerminalNodeID)
 }
 
-func toOllamaMessages(nodes []sgp.Node) []ollamaMessage {
-	msgs := make([]ollamaMessage, 0, len(nodes))
+func toChatMessages(nodes []sgp.Node) []chatMessage {
+	msgs := make([]chatMessage, 0, len(nodes))
 
 	for _, node := range nodes {
 		if node.EffectiveKind() != sgp.NodeKindExperience || node.Archived {
@@ -345,22 +354,32 @@ func toOllamaMessages(nodes []sgp.Node) []ollamaMessage {
 
 		switch {
 		case m.System != nil:
-			msgs = append(msgs, ollamaMessage{Role: "system", Content: m.System.Text})
+			msgs = append(msgs, chatMessage{Role: "system", Content: m.System.Text})
 		case m.User != nil:
-			msgs = append(msgs, ollamaMessage{Role: "user", Content: m.TextContent()})
+			msgs = append(msgs, chatMessage{Role: "user", Content: m.TextContent()})
 		case m.Assistant != nil && len(m.Assistant.ToolCalls) > 0:
-			tcs := make([]ollamaToolCall, len(m.Assistant.ToolCalls))
+			tcs := make([]chatToolCall, len(m.Assistant.ToolCalls))
 			for i, tc := range m.Assistant.ToolCalls {
-				var args map[string]any
-				_ = json.Unmarshal([]byte(tc.Arguments), &args)
-				tcs[i] = ollamaToolCall{Function: ollamaFunction{Name: tc.Name, Arguments: args}}
+				tcs[i] = chatToolCall{
+					ID:   tc.ID,
+					Type: "function",
+					Function: chatFunctionCall{
+						Name:      tc.Name,
+						Arguments: tc.Arguments,
+					},
+				}
 			}
 
-			msgs = append(msgs, ollamaMessage{Role: "assistant", ToolCalls: tcs})
+			msgs = append(msgs, chatMessage{Role: "assistant", ToolCalls: tcs})
 		case m.Assistant != nil:
-			msgs = append(msgs, ollamaMessage{Role: "assistant", Content: m.TextContent()})
+			msgs = append(msgs, chatMessage{Role: "assistant", Content: m.TextContent()})
 		case m.Tool != nil:
-			msgs = append(msgs, ollamaMessage{Role: "tool", Content: m.TextContent()})
+			msgs = append(msgs, chatMessage{
+				Role:       "tool",
+				Content:    m.TextContent(),
+				ToolCallID: m.Tool.ToolCallID,
+				Name:       m.Tool.Name,
+			})
 		}
 	}
 
