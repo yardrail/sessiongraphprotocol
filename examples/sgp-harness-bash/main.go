@@ -95,10 +95,11 @@ func openLocalStore(storeType, dir string) (sgp.Store, string, error) {
 }
 
 func main() {
-	model := flag.String("model", "llama3.2", "Ollama model name")
+	model := flag.String("model", "llama3.2", "Model name")
 	sessionDir := flag.String("session-dir", ".sgp-sessions", "Directory for session data (ignored for --store=mem)")
 	sessionID := flag.String("session-id", "", "Resume an existing session (empty = new)")
-	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama base URL")
+	baseURL := flag.String("base-url", "http://localhost:11434/v1", "OpenAI-compatible API base URL (e.g. Ollama's /v1 endpoint or https://openrouter.ai/api/v1)")
+	apiKey := flag.String("api-key", os.Getenv("OPENAI_API_KEY"), "API key for the OpenAI-compatible endpoint (defaults to $OPENAI_API_KEY)")
 	system := flag.String("system", defaultSystemPrompt, "System prompt")
 	storeType := flag.String("store", "bolt", "Backend: mem, bolt, leveldb")
 	var peers stringSlice
@@ -124,7 +125,8 @@ func main() {
 		store,
 		*sessionDir,
 		*sessionID,
-		*ollamaURL,
+		*baseURL,
+		*apiKey,
 		*model,
 		systemPrompt,
 		"Tools: read_file (read file contents), teleport (switch harness).",

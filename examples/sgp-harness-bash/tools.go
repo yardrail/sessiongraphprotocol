@@ -8,11 +8,11 @@ import (
 	"strings"
 )
 
-func toolDefinitions() []ollamaTool {
-	return []ollamaTool{
+func toolDefinitions() []chatTool {
+	return []chatTool{
 		{
 			Type: "function",
-			Function: ollamaToolDef{
+			Function: chatToolDef{
 				Name:        "read_file",
 				Description: "Read the contents of a file at the given path and return them as text.",
 				Parameters: map[string]any{
@@ -29,7 +29,7 @@ func toolDefinitions() []ollamaTool {
 		},
 		{
 			Type: "function",
-			Function: ollamaToolDef{
+			Function: chatToolDef{
 				Name:        "teleport",
 				Description: "Transfer this session to another harness binary. Pass the absolute path to the destination binary as destination. Call this tool alone, not combined with other tools.",
 				Parameters: map[string]any{
