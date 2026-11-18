@@ -5,7 +5,7 @@ option go_package = "github.com/restrukt-ai/sessiongraphprotocol/gen/sgp/v1;sgpv
 import "google/protobuf/timestamp.proto";
 
 message TextPart   { string text = 1; }
-message BlobPart   { string mime_type = 1; bytes data = 2; }
+message BlobPart   { string mime_type = 1; bytes data = 2; string location = 3; }
 message ImagePart  { BlobPart blob = 1; }
 message AudioPart  { BlobPart blob = 1; }
 message VideoPart  { BlobPart blob = 1; }

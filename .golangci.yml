@@ -5,6 +5,7 @@ linters:
     - depguard
     - dupl
     - exhaustruct
+    - exhaustruct_v5
     - forbidigo
     - funlen
     - gochecknoglobals
@@ -180,6 +181,10 @@ linters:
       - linters:
           - testableexamples
         path: "example_test\\.go$"
+      - linters:
+          - revive
+        text: "file-length-limit"
+        path: "_test\\.go$"
     paths:
       - third_party$
       - builtin$

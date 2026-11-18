@@ -26,6 +26,7 @@ const (
 type BlobPart struct {
 	MimeType string `json:"mime_type"`
 	Data     []byte `json:"data"`
+	Location string `json:"location,omitempty"`
 }
 
 // TextPart carries plain or markdown text.

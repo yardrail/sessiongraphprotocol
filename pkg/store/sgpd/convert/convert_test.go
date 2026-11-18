@@ -231,6 +231,14 @@ func TestNodeRoundTrip(t *testing.T) {
 						Name:     "doc.pdf",
 					},
 				},
+				{
+					Image: &sgp.ImagePart{
+						BlobPart: sgp.BlobPart{
+							MimeType: "image/jpeg",
+							Location: "s3://bucket/key.jpg",
+						},
+					},
+				},
 			},
 		}},
 	}

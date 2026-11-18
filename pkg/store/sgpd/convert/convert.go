@@ -276,7 +276,7 @@ func contentPartFromProto(pb *sgpv1.ContentPart) sgp.ContentPart {
 }
 
 func blobToProto(b sgp.BlobPart) *sgpv1.BlobPart {
-	return &sgpv1.BlobPart{MimeType: b.MimeType, Data: b.Data}
+	return &sgpv1.BlobPart{MimeType: b.MimeType, Data: b.Data, Location: b.Location}
 }
 
 func blobFromProto(pb *sgpv1.BlobPart) sgp.BlobPart {
@@ -284,7 +284,7 @@ func blobFromProto(pb *sgpv1.BlobPart) sgp.BlobPart {
 		return sgp.BlobPart{}
 	}
 
-	return sgp.BlobPart{MimeType: pb.GetMimeType(), Data: pb.GetData()}
+	return sgp.BlobPart{MimeType: pb.GetMimeType(), Data: pb.GetData(), Location: pb.GetLocation()}
 }
 
 func toolCallToProto(tc sgp.ToolCall) *sgpv1.ToolCall {
