@@ -1071,3 +1071,32 @@ func TestAppendTypedNodeAllKinds(t *testing.T) {
 		t.Fatalf("expected extra edge %+v in %+v", extraEdge, expNode.Edges)
 	}
 }
+
+func TestCopyBlobPartLocationOnly(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph(WithIDGenerator(sequenceIDs("s1", "n1", "n2")))
+	mustStart(t, g)
+
+	msg := Message{User: &UserMessage{Parts: []ContentPart{
+		{Image: &ImagePart{BlobPart: BlobPart{
+			MimeType: "image/jpeg",
+			Location: "s3://bucket/key.jpg",
+		}}},
+	}}}
+
+	node, _ := mustAppend(t, g, msg)
+
+	got := node.Message.User.Parts[0].Image.BlobPart
+	if got.MimeType != "image/jpeg" {
+		t.Errorf("MimeType: got %q want %q", got.MimeType, "image/jpeg")
+	}
+
+	if got.Location != "s3://bucket/key.jpg" {
+		t.Errorf("Location: got %q want %q", got.Location, "s3://bucket/key.jpg")
+	}
+
+	if got.Data != nil {
+		t.Errorf("Data: expected nil, got %v", got.Data)
+	}
+}

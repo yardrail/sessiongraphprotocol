@@ -636,13 +636,13 @@ func copyContentPart(part ContentPart) ContentPart {
 
 func copyBlobPart(b BlobPart) BlobPart {
 	if len(b.Data) == 0 {
-		return BlobPart{MimeType: b.MimeType}
+		return BlobPart{MimeType: b.MimeType, Location: b.Location}
 	}
 
 	data := make([]byte, len(b.Data))
 	copy(data, b.Data)
 
-	return BlobPart{MimeType: b.MimeType, Data: data}
+	return BlobPart{MimeType: b.MimeType, Data: data, Location: b.Location}
 }
 
 func copySpawnReference(reference *SpawnReference) *SpawnReference {
